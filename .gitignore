@@ -1,0 +1,10 @@
+# Ignore everything by default
+*
+
+# Only track the thumbnail generator files
+!.gitignore
+!thumbnail_gen.py
+!requirements.txt
+!Procfile
+!doom_debates_thumbnails/
+!doom_debates_thumbnails/**
