@@ -6,5 +6,6 @@
 !thumbnail_gen.py
 !requirements.txt
 !Procfile
+!render.yaml
 !doom_debates_thumbnails/
 !doom_debates_thumbnails/**

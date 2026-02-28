@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: doom-thumbnails
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python thumbnail_gen.py
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: NO_BROWSER
+        value: "1"
