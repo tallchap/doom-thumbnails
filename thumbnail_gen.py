@@ -159,6 +159,7 @@ status = {
     "ideas": [],
     "idea_groups": {},
     "cost": 0.0,
+    "session_cost": 0.0,
 }
 
 # ----- API Client & File API -----
@@ -532,6 +533,7 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
 
                                 status["completed"] += 1
                                 status["cost"] += COST_PER_IMAGE
+                                status["session_cost"] += COST_PER_IMAGE
                                 img_entry = {
                                     "idx": idx,
                                     "path": filepath,
@@ -587,6 +589,7 @@ def run_generation(client, prompts, output_dir, phase="round1"):
         status["images"] = []
         status["idea_groups"] = {}
         status["cost"] = 0.0
+    # session_cost is never reset — it accumulates for the entire session
     status["done"] = False
     status["output_dir"] = output_dir
 
@@ -888,7 +891,7 @@ HTML = r"""<!DOCTYPE html>
   .tag-required { background: #e94560; color: #fff; }
 
   .cost-display {
-    position: fixed; bottom: 16px; right: 16px; background: #16213e;
+    position: fixed; top: 16px; left: 16px; background: #16213e;
     border: 1px solid #0f3460; border-radius: 8px; padding: 8px 14px;
     font-size: 13px; color: #a0a0b0; z-index: 100;
   }
@@ -1026,6 +1029,11 @@ HTML = r"""<!DOCTYPE html>
     <div class="field-hint">Logos, icons, or reference images to use as visual material (not faces).</div>
   </div>
 
+  <div class="mb">
+    <label class="section">Additional Instructions <span class="tag">Optional — affects all future generations</span></label>
+    <textarea id="additionalInstructions" rows="2" placeholder="e.g. Make Liron look more concerned. Use mushroom clouds. Always include a doomsday clock."></textarea>
+  </div>
+
   <div class="btn-row">
     <button class="btn btn-secondary" id="gatherBtn" onclick="gatherSourceImages()">Gather Source Images from Web</button>
     <button class="btn btn-primary" id="skipToIdeasBtn" onclick="skipToIdeas()">Skip to Generate Ideas</button>
@@ -1088,12 +1096,6 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- ADDITIONAL INSTRUCTIONS (always visible after step 1) -->
-<div class="card hidden" id="additionalCard">
-  <label class="section">Additional Instructions <span class="tag">Optional — affects all future generations</span></label>
-  <textarea id="additionalInstructions" rows="2" placeholder="e.g. Make Liron look more concerned. Use mushroom clouds. Always include a doomsday clock."></textarea>
-</div>
-
 <!-- COMPUTATION WINDOW — fixed upper-right -->
 <div class="compute-window collapsed" id="computeWindow">
   <div class="compute-header" onclick="toggleComputeWindow()">
@@ -1117,6 +1119,9 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+
+<!-- Session cost display — fixed top-left -->
+<div class="cost-display" id="sessionCostDisplay">Session cost: <strong>$0.00</strong></div>
 
 <script>
 // ----- State -----
@@ -1203,7 +1208,6 @@ async function gatherSourceImages() {
     sourceImages = (data.images || []).map((img, i) => ({...img, id: i, removed: false}));
     renderSourceGallery();
     document.getElementById('sourceGalleryCard').classList.remove('hidden');
-    document.getElementById('additionalCard').classList.remove('hidden');
     document.getElementById('gatherStatus').textContent = `Found ${sourceImages.length} images`;
   } catch(e) {
     alert('Error: ' + e);
@@ -1244,7 +1248,6 @@ function addMoreSourceImages(input) {
 function skipToIdeas() {
   const title = document.getElementById('episodeTitle').value.trim();
   if (!title) { alert('Please enter an episode title.'); return; }
-  document.getElementById('additionalCard').classList.remove('hidden');
   proceedToIdeas();
 }
 
@@ -1460,20 +1463,13 @@ async function executeRiff(ideaIdx) {
   fd.append('riff_prompt', riffPrompt);
   fd.append('riff_count', riffCount);
 
-  for (const f of document.getElementById('speakerFiles').files) {
-    fd.append('speakers', f);
-  }
-  for (const f of document.getElementById('sourceFiles').files) {
-    fd.append('sources', f);
-  }
-  // Riff-specific images
+  // Do NOT resend speakers/sources/source_urls — server reuses stored refs from initial generation.
+  // Only send riff-specific images if the user added them.
   if (riffImagesInput && riffImagesInput.files.length > 0) {
     for (const f of riffImagesInput.files) {
       fd.append('riff_images', f);
     }
   }
-  const selectedSources = sourceImages.filter(s => !s.removed).map(s => s.url).filter(Boolean);
-  fd.append('source_urls', JSON.stringify(selectedSources));
 
   try {
     const resp = await fetch('/riff_idea', { method: 'POST', body: fd });
@@ -1556,11 +1552,14 @@ function pollStatus() {
     logArea.innerHTML = data.log.slice(-50).map(l => '<div>' + escHtml(l) + '</div>').join('');
     logArea.scrollTop = logArea.scrollHeight;
 
-    // Update cost
-    if (data.cost !== undefined) {
+    // Update cost (show session-wide aggregate)
+    if (data.session_cost !== undefined) {
       const costEl = document.getElementById('computeCost');
       costEl.style.display = 'block';
-      document.getElementById('costAmount').textContent = '$' + data.cost.toFixed(2);
+      document.getElementById('costAmount').textContent = '$' + data.session_cost.toFixed(2);
+      // Also update the fixed cost display
+      const fixedCost = document.getElementById('sessionCostDisplay');
+      if (fixedCost) fixedCost.innerHTML = 'Session cost: <strong>$' + data.session_cost.toFixed(2) + '</strong>';
     }
 
     // Add new images to grid
@@ -2053,31 +2052,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         client = get_client()
 
-        # Re-upload speakers/sources if provided, otherwise reuse stored refs
-        speaker_refs = upload_files_from_bytes(client, files.get("speakers", []), "speaker")
-        if not speaker_refs:
-            speaker_refs = status.get("speakers", [])
+        # Reuse stored refs from initial generation (riff no longer resends full library)
+        speaker_refs = status.get("speakers", [])
+        source_refs = list(status.get("sources", []))
 
-        source_refs = upload_files_from_bytes(client, files.get("sources", []), "source")
-
-        # Upload riff-specific images
+        # Upload riff-specific images if the user added any
         riff_image_refs = upload_files_from_bytes(client, files.get("riff_images", []), "riff_img")
         source_refs.extend(riff_image_refs)
-
-        # Download web sources
-        source_urls_json = fields.get("source_urls", "[]")
-        try:
-            source_urls = json.loads(source_urls_json)
-        except json.JSONDecodeError:
-            source_urls = []
-        for url in source_urls[:15]:
-            img_bytes = download_image_bytes(url)
-            if img_bytes:
-                refs = upload_files_from_bytes(client, [img_bytes], "web_source")
-                source_refs.extend(refs)
-
-        if not source_refs:
-            source_refs = status.get("sources", [])
 
         episode_dir = status.get("episode_dir", "")
         if not episode_dir:
