@@ -1384,6 +1384,11 @@ async function executeRiff(ideaIdx) {
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
 
+    // Register riff as a new idea so addImageToGrid can find its text
+    const riffIdeaIdx = data.riff_idea_idx;
+    while (ideas.length <= riffIdeaIdx) ideas.push('');
+    ideas[riffIdeaIdx] = '(Riff on Idea ' + (ideaIdx + 1) + ') ' + idea;
+
     // Collapse the riff panel
     const panel = document.getElementById('riff-panel-' + ideaIdx);
     if (panel) panel.style.display = 'none';
@@ -1697,6 +1702,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         }.get(ext, "image/png")
         self.send_response(200)
         self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(os.path.getsize(filepath)))
         self.end_headers()
         with open(filepath, "rb") as f:
             self.wfile.write(f.read())
@@ -1715,8 +1721,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ".png": "image/png", ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg", ".webp": "image/webp",
         }.get(ext, "image/png")
+        filesize = os.path.getsize(filepath)
         self.send_response(200)
         self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(filesize))
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         with open(filepath, "rb") as f:
@@ -1919,13 +1927,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
         os.makedirs(round_dir, exist_ok=True)
 
-        # Build riff prompts — reuse idea_idx so images group correctly
+        # Build riff prompts — assign a NEW idea_idx so riffs appear as a new group
         prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=20)
-        # Remap idea_idx from 0 back to the original idea_idx
-        prompts = [(idea_idx, var, contents) for (_, var, contents) in prompts_raw]
+
+        # Compute next available idea index (beyond all existing images and ideas)
+        existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
+        ideas_max = len(status.get("ideas", [])) - 1
+        riff_idea_idx = max(existing_max, ideas_max) + 1
+
+        prompts = [(riff_idea_idx, var, contents) for (_, var, contents) in prompts_raw]
 
         run_generation(client, prompts, round_dir, "riff")
-        self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
+        self._json_response({
+            "ok": True, "output_dir": round_dir, "count": len(prompts),
+            "riff_idea_idx": riff_idea_idx, "riff_label": idea_text,
+        })
 
     def _handle_more_ideas(self, body):
         """Generate more ideas, avoiding duplicates."""
