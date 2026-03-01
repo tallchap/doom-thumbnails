@@ -412,7 +412,7 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
     return prompts
 
 
-def build_riff_prompts(idea_text, idea_idx, speaker_refs, source_refs, custom_prompt, additional_instructions, count=20):
+def build_riff_prompts(idea_text, idea_idx, speaker_refs, source_refs, custom_prompt, additional_instructions, count=3):
     """Build prompts for riffing on a single idea."""
     return build_idea_prompts(
         [idea_text], speaker_refs, source_refs, custom_prompt, additional_instructions, variations_per=count
@@ -872,6 +872,70 @@ HTML = r"""<!DOCTYPE html>
   }
   .cost-display strong { color: #4ade80; }
 
+  /* Computation window — fixed upper-right */
+  .compute-window {
+    position: fixed; top: 16px; right: 16px; width: 380px;
+    background: #16213e; border: 1px solid #0f3460; border-radius: 10px;
+    z-index: 200; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    font-size: 13px; overflow: hidden;
+    transition: height 0.2s;
+  }
+  .compute-window.collapsed {
+    height: auto;
+  }
+  .compute-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px; background: #0f3460; cursor: pointer;
+    user-select: none;
+  }
+  .compute-header .compute-title {
+    color: #fff; font-weight: 600; font-size: 13px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .compute-header .compute-toggle {
+    color: #a0a0b0; font-size: 18px; background: none; border: none;
+    cursor: pointer; padding: 0 4px;
+  }
+  .compute-header .compute-toggle:hover { color: #fff; }
+  .compute-body {
+    padding: 12px 14px; max-height: 400px; overflow-y: auto;
+  }
+  .compute-window.collapsed .compute-body { display: none; }
+  .compute-status {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    color: #a0a0b0;
+  }
+  .compute-status .status-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #555;
+    flex-shrink: 0;
+  }
+  .compute-status .status-dot.active {
+    background: #4ade80; animation: pulse-dot 1.5s infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .compute-progress {
+    width: 100%; height: 6px; background: #0d1b3e; border-radius: 3px;
+    overflow: hidden; margin: 8px 0;
+  }
+  .compute-progress-fill {
+    height: 100%; background: #e94560; border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .compute-log {
+    background: #0d1b3e; border-radius: 6px; padding: 8px 10px;
+    font-family: "SF Mono", Monaco, monospace; font-size: 11px;
+    max-height: 220px; overflow-y: auto; color: #a0a0b0;
+    margin-top: 8px;
+  }
+  .compute-log div { margin-bottom: 2px; }
+  .compute-cost {
+    margin-top: 8px; color: #a0a0b0; font-size: 12px;
+  }
+  .compute-cost strong { color: #4ade80; }
+
   .step-num {
     display: inline-flex; align-items: center; justify-content: center;
     width: 28px; height: 28px; border-radius: 50%; background: #e94560;
@@ -974,19 +1038,7 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- STEP 4: PROGRESS -->
-<div class="card hidden" id="progressCard">
-  <div class="section-header">
-    <h2 id="phaseLabel">Generating...</h2>
-    <span id="progressText" style="color:#a0a0b0;">0 / 0</span>
-  </div>
-  <div class="progress-bar">
-    <div class="progress-fill" id="progressFill" style="width:0%"></div>
-  </div>
-  <div class="log" id="logArea"></div>
-</div>
-
-<!-- STEP 5: THUMBNAILS GRID -->
+<!-- STEP 4: THUMBNAILS GRID -->
 <div class="card hidden" id="gridCard">
   <div class="section-header">
     <h2 id="gridLabel">Select Your Favorites</h2>
@@ -1020,9 +1072,28 @@ HTML = r"""<!DOCTYPE html>
   <textarea id="additionalInstructions" rows="2" placeholder="e.g. Make Liron look more concerned. Use mushroom clouds. Always include a doomsday clock."></textarea>
 </div>
 
-<!-- COST DISPLAY -->
-<div class="cost-display" id="costDisplay" style="display:none;">
-  Est. cost: <strong id="costAmount">$0.00</strong>
+<!-- COMPUTATION WINDOW — fixed upper-right -->
+<div class="compute-window collapsed" id="computeWindow">
+  <div class="compute-header" onclick="toggleComputeWindow()">
+    <div class="compute-title">
+      <span class="status-dot" id="computeDot"></span>
+      <span id="computeTitle">Computation</span>
+    </div>
+    <button class="compute-toggle" id="computeToggleBtn">&#9660;</button>
+  </div>
+  <div class="compute-body" id="computeBody">
+    <div class="compute-status">
+      <span id="computePhase">Idle</span>
+      <span id="computeProgressText" style="margin-left:auto;"></span>
+    </div>
+    <div class="compute-progress">
+      <div class="compute-progress-fill" id="computeProgressFill" style="width:0%"></div>
+    </div>
+    <div class="compute-log" id="computeLog"></div>
+    <div class="compute-cost" id="computeCost" style="display:none;">
+      Est. cost: <strong id="costAmount">$0.00</strong>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1318,9 +1389,8 @@ async function generateThumbnails() {
     document.getElementById('ideaGroupsContainer').innerHTML = '';
     updateSelectedUI();
 
-    document.getElementById('progressCard').classList.remove('hidden');
     document.getElementById('gridCard').classList.remove('hidden');
-    document.getElementById('costDisplay').style.display = 'block';
+    showComputeWindow();
     startPolling();
   } catch(e) {
     alert('Error: ' + e);
@@ -1357,12 +1427,16 @@ async function executeRiff(ideaIdx) {
   const riffPrompt = (document.getElementById('riff-prompt-' + ideaIdx) || {}).value || '';
   const riffImagesInput = document.getElementById('riff-images-' + ideaIdx);
 
+  const riffCountInput = document.getElementById('riff-count-' + ideaIdx);
+  const riffCount = riffCountInput ? parseInt(riffCountInput.value) || 3 : 3;
+
   const fd = new FormData();
   fd.append('idea_text', idea);
   fd.append('idea_idx', ideaIdx);
   fd.append('custom_prompt', document.getElementById('customPrompt').value);
   fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
   fd.append('riff_prompt', riffPrompt);
+  fd.append('riff_count', riffCount);
 
   for (const f of document.getElementById('speakerFiles').files) {
     fd.append('speakers', f);
@@ -1393,13 +1467,32 @@ async function executeRiff(ideaIdx) {
     const panel = document.getElementById('riff-panel-' + ideaIdx);
     if (panel) panel.style.display = 'none';
 
-    document.getElementById('progressCard').classList.remove('hidden');
     document.getElementById('gridCard').classList.remove('hidden');
-    document.getElementById('costDisplay').style.display = 'block';
+    showComputeWindow();
     startPolling();
   } catch(e) {
     alert('Error: ' + e);
   }
+}
+
+// ----- Computation Window -----
+function toggleComputeWindow() {
+  const win = document.getElementById('computeWindow');
+  const btn = document.getElementById('computeToggleBtn');
+  if (win.classList.contains('collapsed')) {
+    win.classList.remove('collapsed');
+    btn.innerHTML = '&#9650;';
+  } else {
+    win.classList.add('collapsed');
+    btn.innerHTML = '&#9660;';
+  }
+}
+
+function showComputeWindow() {
+  const win = document.getElementById('computeWindow');
+  win.style.display = 'block';
+  win.classList.remove('collapsed');
+  document.getElementById('computeToggleBtn').innerHTML = '&#9650;';
 }
 
 // ----- Polling -----
@@ -1412,8 +1505,10 @@ function pollStatus() {
   fetch('/status').then(r => r.json()).then(data => {
     const doneCount = data.completed + data.errors;
     const pct = data.total > 0 ? (doneCount / data.total * 100) : 0;
-    document.getElementById('progressFill').style.width = pct + '%';
-    document.getElementById('progressText').textContent =
+
+    // Update computation window
+    document.getElementById('computeProgressFill').style.width = pct + '%';
+    document.getElementById('computeProgressText').textContent =
       data.completed + ' / ' + data.total + (data.errors > 0 ? ' (' + data.errors + ' failed)' : '');
 
     const phaseNames = {
@@ -1422,22 +1517,47 @@ function pollStatus() {
       revision: 'Revising...',
       variation: 'Generating Variations...'
     };
-    document.getElementById('phaseLabel').textContent = phaseNames[data.phase] || 'Generating...';
+    const phaseName = phaseNames[data.phase] || 'Generating...';
+    document.getElementById('computePhase').textContent = phaseName;
+    document.getElementById('computeTitle').textContent = data.done ? 'Computation — Done' : phaseName;
 
-    const logArea = document.getElementById('logArea');
-    logArea.innerHTML = data.log.slice(-30).map(l => '<div>' + escHtml(l) + '</div>').join('');
+    // Status dot
+    const dot = document.getElementById('computeDot');
+    if (data.done) {
+      dot.classList.remove('active');
+    } else {
+      dot.classList.add('active');
+    }
+
+    // Log
+    const logArea = document.getElementById('computeLog');
+    logArea.innerHTML = data.log.slice(-50).map(l => '<div>' + escHtml(l) + '</div>').join('');
     logArea.scrollTop = logArea.scrollHeight;
 
     // Update cost
     if (data.cost !== undefined) {
+      const costEl = document.getElementById('computeCost');
+      costEl.style.display = 'block';
       document.getElementById('costAmount').textContent = '$' + data.cost.toFixed(2);
     }
 
     // Add new images to grid
+    let addedNew = false;
     while (allImages.length < data.images.length) {
       const img = data.images[allImages.length];
       allImages.push(img);
       addImageToGrid(img);
+      addedNew = true;
+    }
+
+    // Auto-scroll to the newest group when new images arrive
+    if (addedNew) {
+      const container = document.getElementById('ideaGroupsContainer');
+      const groups = container.children;
+      if (groups.length > 0) {
+        const lastGroup = groups[groups.length - 1];
+        lastGroup.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
     }
 
     // Disable riff buttons while generating, re-enable when done
@@ -1446,6 +1566,13 @@ function pollStatus() {
     if (data.done) {
       clearInterval(pollInterval);
       pollInterval = null;
+      // Collapse compute window after a delay
+      setTimeout(() => {
+        const win = document.getElementById('computeWindow');
+        // Don't collapse if user is hovering
+        win.classList.add('collapsed');
+        document.getElementById('computeToggleBtn').innerHTML = '&#9660;';
+      }, 3000);
     }
   }).catch(() => {});
 }
@@ -1465,7 +1592,7 @@ function addImageToGrid(img) {
     group.innerHTML =
       '<div class="idea-group-header">' +
         '<div class="idea-label">' + (ideaIdx >= 0 ? '<strong>Idea ' + (ideaIdx+1) + ':</strong> ' : '') + escHtml(ideaText) + '</div>' +
-        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm riff-btn" onclick="toggleRiffPanel(' + ideaIdx + ')">Riff 20 More</button>' : '') +
+        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm riff-btn" onclick="toggleRiffPanel(' + ideaIdx + ')">Riff</button>' : '') +
       '</div>' +
       (ideaIdx >= 0 ? '<div class="riff-panel" id="riff-panel-' + ideaIdx + '" style="display:none;">' +
         '<div class="mb">' +
@@ -1480,7 +1607,11 @@ function addImageToGrid(img) {
             '<div class="file-previews" id="riff-previews-' + ideaIdx + '"></div>' +
           '</div>' +
         '</div>' +
-        '<button class="btn btn-primary btn-sm" onclick="executeRiff(' + ideaIdx + ')">Generate 20 Riffs</button>' +
+        '<div class="btn-row" style="margin-top:8px;align-items:center;">' +
+          '<label class="section" style="margin:0;">Count:</label>' +
+          '<input type="number" id="riff-count-' + ideaIdx + '" value="3" min="1" max="50" style="width:60px;padding:6px 8px;font-size:13px;">' +
+          '<button class="btn btn-primary btn-sm" onclick="executeRiff(' + ideaIdx + ')">Generate Riffs</button>' +
+        '</div>' +
       '</div>' : '') +
       '<div class="thumb-grid" id="idea-grid-' + ideaIdx + '"></div>';
     container.appendChild(group);
@@ -1533,7 +1664,7 @@ function startRevision() {
     if (data.error) { alert(data.error); return; }
     document.getElementById('gridLabel').textContent = 'Revisions — Select Your Finals';
     selected.clear(); updateSelectedUI();
-    document.getElementById('progressCard').classList.remove('hidden');
+    showComputeWindow();
     startPolling();
   });
 }
@@ -1544,7 +1675,7 @@ function startVariations() {
     if (data.error) { alert(data.error); return; }
     document.getElementById('gridLabel').textContent = 'Variations — Select Your Finals';
     selected.clear(); updateSelectedUI();
-    document.getElementById('progressCard').classList.remove('hidden');
+    showComputeWindow();
     startPolling();
   });
 }
@@ -1935,7 +2066,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         os.makedirs(round_dir, exist_ok=True)
 
         # Build riff prompts — assign a NEW idea_idx so riffs appear as a new group
-        prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=20)
+        riff_count = int(fields.get("riff_count", "3"))
+        if riff_count < 1:
+            riff_count = 3
+        if riff_count > 50:
+            riff_count = 50
+        prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=riff_count)
 
         # Compute next available idea index (beyond all existing images and ideas)
         existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
