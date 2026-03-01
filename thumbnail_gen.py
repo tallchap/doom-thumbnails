@@ -815,6 +815,12 @@ HTML = r"""<!DOCTYPE html>
   }
   .selected-count { color: #4ade80; font-weight: 600; font-size: 14px; }
 
+  .riff-panel {
+    margin: 12px 0; padding: 14px; background: #16213e;
+    border-radius: 8px; border: 1px solid #0f3460;
+  }
+  .riff-panel .file-upload { padding: 12px; }
+
   .revision-panel {
     margin-top: 16px; padding: 16px; background: #0d1b3e;
     border-radius: 10px; border: 1px solid #0f3460;
@@ -1272,21 +1278,50 @@ async function generateThumbnails() {
   }
 }
 
-async function riffIdea(ideaIdx) {
+function toggleRiffPanel(ideaIdx) {
+  const panel = document.getElementById('riff-panel-' + ideaIdx);
+  if (!panel) return;
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function showRiffPreviews(ideaIdx) {
+  const input = document.getElementById('riff-images-' + ideaIdx);
+  const container = document.getElementById('riff-previews-' + ideaIdx);
+  if (!input || !container) return;
+  container.innerHTML = '';
+  for (const file of input.files) {
+    if (!file.type.startsWith('image/')) continue;
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    container.appendChild(img);
+  }
+}
+
+async function executeRiff(ideaIdx) {
   const idea = ideas[ideaIdx];
   if (!idea) return;
+
+  const riffPrompt = (document.getElementById('riff-prompt-' + ideaIdx) || {}).value || '';
+  const riffImagesInput = document.getElementById('riff-images-' + ideaIdx);
 
   const fd = new FormData();
   fd.append('idea_text', idea);
   fd.append('idea_idx', ideaIdx);
   fd.append('custom_prompt', document.getElementById('customPrompt').value);
   fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+  fd.append('riff_prompt', riffPrompt);
 
   for (const f of document.getElementById('speakerFiles').files) {
     fd.append('speakers', f);
   }
   for (const f of document.getElementById('sourceFiles').files) {
     fd.append('sources', f);
+  }
+  // Riff-specific images
+  if (riffImagesInput && riffImagesInput.files.length > 0) {
+    for (const f of riffImagesInput.files) {
+      fd.append('riff_images', f);
+    }
   }
   const selectedSources = sourceImages.filter(s => !s.removed).map(s => s.url).filter(Boolean);
   fd.append('source_urls', JSON.stringify(selectedSources));
@@ -1295,6 +1330,10 @@ async function riffIdea(ideaIdx) {
     const resp = await fetch('/riff_idea', { method: 'POST', body: fd });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
+
+    // Collapse the riff panel
+    const panel = document.getElementById('riff-panel-' + ideaIdx);
+    if (panel) panel.style.display = 'none';
 
     document.getElementById('progressCard').classList.remove('hidden');
     startPolling();
@@ -1363,8 +1402,23 @@ function addImageToGrid(img) {
     group.innerHTML =
       '<div class="idea-group-header">' +
         '<div class="idea-label">' + (ideaIdx >= 0 ? '<strong>Idea ' + (ideaIdx+1) + ':</strong> ' : '') + escHtml(ideaText) + '</div>' +
-        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm" onclick="riffIdea(' + ideaIdx + ')">Riff 20 More</button>' : '') +
+        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm" onclick="toggleRiffPanel(' + ideaIdx + ')">Riff 20 More</button>' : '') +
       '</div>' +
+      (ideaIdx >= 0 ? '<div class="riff-panel" id="riff-panel-' + ideaIdx + '" style="display:none;">' +
+        '<div class="mb">' +
+          '<label class="section">Riff Instructions <span class="tag">Optional</span></label>' +
+          '<textarea id="riff-prompt-' + ideaIdx + '" rows="2" placeholder="e.g. Make it more dramatic, add fire, change the headline to GAME OVER..."></textarea>' +
+        '</div>' +
+        '<div class="mb">' +
+          '<label class="section">Additional Images <span class="tag">Optional</span></label>' +
+          '<div class="file-upload" style="padding:12px;">' +
+            '<input type="file" id="riff-images-' + ideaIdx + '" multiple accept="image/*" onchange="showRiffPreviews(' + ideaIdx + ')">' +
+            '<div class="upload-label"><strong>Click to browse</strong> or drag & drop images to include in the riff</div>' +
+            '<div class="file-previews" id="riff-previews-' + ideaIdx + '"></div>' +
+          '</div>' +
+        '</div>' +
+        '<button class="btn btn-primary btn-sm" onclick="executeRiff(' + ideaIdx + ')">Generate 20 Riffs</button>' +
+      '</div>' : '') +
       '<div class="thumb-grid" id="idea-grid-' + ideaIdx + '"></div>';
     container.appendChild(group);
   }
@@ -1707,10 +1761,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         idea_idx = int(fields.get("idea_idx", "-1"))
         custom_prompt = fields.get("custom_prompt", "").strip()
         additional = fields.get("additional_instructions", "").strip()
+        riff_prompt = fields.get("riff_prompt", "").strip()
 
         if not idea_text:
             self._json_response({"error": "No idea text provided"})
             return
+
+        # Append riff prompt to additional instructions so it's included in the generation
+        if riff_prompt:
+            additional = (additional + "\n\nRIFF INSTRUCTIONS: " + riff_prompt) if additional else "RIFF INSTRUCTIONS: " + riff_prompt
 
         client = get_client()
 
@@ -1720,6 +1779,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             speaker_refs = status.get("speakers", [])
 
         source_refs = upload_files_from_bytes(client, files.get("sources", []), "source")
+
+        # Upload riff-specific images
+        riff_image_refs = upload_files_from_bytes(client, files.get("riff_images", []), "riff_img")
+        source_refs.extend(riff_image_refs)
 
         # Download web sources
         source_urls_json = fields.get("source_urls", "[]")
