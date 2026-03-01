@@ -2148,7 +2148,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 selected_images.append(Image.open(img_info["path"]))
 
         if not selected_images:
-            self._json_response({"error": "Could not load selected images"})
+            if not status["images"]:
+                self._json_response({"error": "No thumbnails in server memory. The server was likely restarted — please regenerate thumbnails first."})
+            else:
+                self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(status['images'])) + " known images). Try regenerating."})
             return
 
         speakers = status.get("speakers", [])
@@ -2182,7 +2185,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 selected_images.append(Image.open(img_info["path"]))
 
         if not selected_images:
-            self._json_response({"error": "Could not load selected images"})
+            if not status["images"]:
+                self._json_response({"error": "No thumbnails in server memory. The server was likely restarted — please regenerate thumbnails first."})
+            else:
+                self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(status['images'])) + " known images). Try regenerating."})
             return
 
         speakers = status.get("speakers", [])
