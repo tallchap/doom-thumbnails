@@ -48,14 +48,14 @@ TEXT_MODEL = "gemini-2.5-flash"
 MAX_CONCURRENT = 15
 THUMBNAILS_DIR = os.path.join(SCRIPT_DIR, "thumbnails")
 EXAMPLES_DIR = os.path.join(SCRIPT_DIR, "doom_debates_thumbnails")
+LIRON_DIR = os.path.join(SCRIPT_DIR, "liron_reactions")
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
 COST_PER_IMAGE = 0.045  # $0.045 per 512px image
 
 BRAND_GUIDE = """BRAND — "DOOM DEBATES":
 YouTube channel by Liron Shapira about AI existential risk.
 Study the attached brand reference thumbnails for VISUAL STYLE ONLY — colors, composition, typography, energy.
-Do NOT copy or reproduce any faces or people from the brand references. The only people in your thumbnail
-should come from the speaker photos (if provided).
+CRITICAL: The brand thumbnails contain images of people — COMPLETELY IGNORE all human faces in the brand references. Do NOT reproduce, copy, or be inspired by ANY faces from the brand references. Use ONLY the colors, layout, typography, and visual energy. The ONLY faces allowed in your output are from separately labeled speaker/host photo sections.
 Key brand traits:
 - Red-toned background gradient or texture as the base
 - Large bold headline text in white or yellow, dramatic and punchy
@@ -103,13 +103,15 @@ Apply the Doom Debates brand style. Use the attached brand reference thumbnails 
 
 {speaker_section}
 
+{liron_section}
+
 {additional_instructions}
 
 RULES:
 - 16:9 aspect ratio, photorealistic, sharp focus
 - Large expressive faces (40-60% of frame)
 - High contrast, clean composition, one focal point
-- The ONLY people in the thumbnail should be from the speaker photos (if provided), NOT from brand references
+- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are: (1) Liron Shapira if his photos are attached, (2) the episode guest if speaker photos are attached. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
 - Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
 
 Variation #{variation_seed} — make this meaningfully different from other variations."""
@@ -121,6 +123,7 @@ REVISION INSTRUCTIONS: {custom_prompt}
 Keep the core composition but apply the requested changes.
 Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one short headline, nothing else.
 {speaker_section}
+- The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
 
 Variation #{variation_seed} — try something meaningfully different from the other revisions."""
 
@@ -133,6 +136,7 @@ Keep the same general composition, mood, and subject, but vary:
 The variation should feel like a sibling of the original, not a copy.
 Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one short headline, nothing else.
 {speaker_section}
+- The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
 
 Variation #{variation_seed} — try something meaningfully different."""
 
@@ -160,6 +164,7 @@ status = {
 # ----- API Client & File API -----
 
 BRAND_FILES = []
+LIRON_FILES = []
 
 
 def get_client():
@@ -196,6 +201,33 @@ def upload_brand_references(client):
         except Exception as e:
             print(f"  Failed to upload {f}: {e}")
     print(f"Uploaded {len(BRAND_FILES)} brand references.")
+
+
+def upload_liron_references(client):
+    """Upload Liron reaction photos to Gemini File API on startup."""
+    global LIRON_FILES
+    if not os.path.isdir(LIRON_DIR):
+        print(f"Liron reactions directory not found: {LIRON_DIR}")
+        return
+    files = sorted(
+        f for f in os.listdir(LIRON_DIR)
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    )
+    if not files:
+        print("No Liron reaction images found.")
+        return
+    print(f"Uploading {len(files)} Liron reaction photos to File API...")
+    for i, f in enumerate(files):
+        filepath = os.path.join(LIRON_DIR, f)
+        try:
+            uploaded = client.files.upload(
+                file=filepath,
+                config=types.UploadFileConfig(display_name=f"liron_{os.path.splitext(f)[0]}"),
+            )
+            LIRON_FILES.append(uploaded)
+        except Exception as e:
+            print(f"  Failed to upload {f}: {e}")
+    print(f"Uploaded {len(LIRON_FILES)} Liron reaction photos.")
 
 
 def upload_files_from_bytes(client, file_bytes_list, name_prefix):
@@ -320,12 +352,22 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
 
     prompts = []
     for idea_idx, idea_text in enumerate(ideas):
+        # Detect if Liron is mentioned in this idea
+        idea_mentions_liron = "liron" in idea_text.lower()
+        liron_section = (
+            "LIRON SHAPIRA (HOST): Liron's reaction photos are attached below. If Liron appears in this "
+            "thumbnail, his face MUST match these photos exactly — same face, features, beard, skin tone. "
+            "Do NOT invent or generate a face for Liron."
+            if idea_mentions_liron and LIRON_FILES else ""
+        )
+
         for v in range(variations_per):
             prompt_text = IDEA_THUMBNAIL_PROMPT.format(
                 idea_text=idea_text,
                 custom_prompt_section=custom_section,
                 brand_guide=BRAND_GUIDE,
                 speaker_section=speaker_section,
+                liron_section=liron_section,
                 additional_instructions=addl,
                 variation_seed=v + 1,
             )
@@ -333,8 +375,12 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
 
             if BRAND_FILES:
                 brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
-                contents.append("=== DOOM DEBATES BRAND — match ONLY the visual style (colors, composition, typography, energy). Do NOT copy any faces or people from these reference images ===")
+                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
+
+            if idea_mentions_liron and LIRON_FILES:
+                contents.append("=== LIRON SHAPIRA (HOST) — this is what Liron looks like. Use these photos for Liron's face ===")
+                contents.extend(LIRON_FILES)
 
             if speaker_refs:
                 contents.append("=== SPEAKER PHOTOS — the thumbnail MUST use these people's real faces ===")
@@ -373,7 +419,7 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
             contents = [prompt_text, img]
             if BRAND_FILES:
                 brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
-                contents.append("=== BRAND REFERENCES — visual style only, do NOT copy faces ===")
+                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
             if speaker_refs:
                 contents.append("=== SPEAKER PHOTOS ===")
@@ -400,7 +446,7 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
             contents = [prompt_text, img]
             if BRAND_FILES:
                 brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
-                contents.append("=== BRAND REFERENCES — visual style only, do NOT copy faces ===")
+                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
             if speaker_refs:
                 contents.append("=== SPEAKER PHOTOS ===")
@@ -1858,11 +1904,13 @@ def main():
 
     client = get_client()
     upload_brand_references(client)
+    upload_liron_references(client)
     print(f"Doom Debates Thumbnail Generator v2")
     print(f"Image Model: {GEMINI_MODEL}")
     print(f"Text Model: {TEXT_MODEL}")
     print(f"Output: {THUMBNAILS_DIR}")
     print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
+    print(f"Liron Refs: {len(LIRON_FILES)} images from {LIRON_DIR}")
     print(f"Brave Search: {'enabled' if BRAVE_API_KEY else 'disabled (no BRAVE_API_KEY)'}")
     print(f"Server: http://0.0.0.0:{PORT}")
     if APP_PASS:

@@ -9,3 +9,5 @@
 !render.yaml
 !doom_debates_thumbnails/
 !doom_debates_thumbnails/**
+!liron_reactions/
+!liron_reactions/**
