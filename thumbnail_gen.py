@@ -357,7 +357,7 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
         liron_section = (
             "LIRON SHAPIRA (HOST) — CRITICAL FACE MATCH REQUIREMENT:\n"
             "13 reference photos of Liron Shapira are attached below showing him in various expressions. "
-            "Study ALL of these photos carefully. Liron is a man with a beard, dark hair, and olive skin. "
+            "Study ALL of these photos carefully. "
             "If Liron appears in this thumbnail, his face MUST be a faithful reproduction of the person in these photos — "
             "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
             "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness from the reference photos."
@@ -1241,8 +1241,33 @@ function deleteIdea(idx) {
   renderIdeas();
 }
 
+// ----- Helpers -----
+function flushActiveEdits() {
+  // Save any idea that's currently being edited in a textarea
+  const ideasList = document.getElementById('ideasList');
+  if (!ideasList) return;
+  const textareas = ideasList.querySelectorAll('textarea');
+  textareas.forEach(ta => {
+    const match = ta.parentElement && ta.parentElement.id && ta.parentElement.id.match(/idea-text-(\d+)/);
+    if (match) {
+      const idx = parseInt(match[1]);
+      const val = ta.value.trim();
+      if (val && idx < ideas.length) ideas[idx] = val;
+    }
+  });
+}
+
+function setRiffButtonsDisabled(disabled) {
+  document.querySelectorAll('.riff-btn').forEach(btn => {
+    btn.disabled = disabled;
+    if (disabled) btn.title = 'Wait for current generation to finish';
+    else btn.title = '';
+  });
+}
+
 // ----- Step 4: Generate Thumbnails -----
 async function generateThumbnails() {
+  flushActiveEdits();
   if (ideas.length === 0) { alert('No ideas to generate thumbnails for.'); return; }
 
   const btn = document.getElementById('genThumbsBtn');
@@ -1312,8 +1337,9 @@ function showRiffPreviews(ideaIdx) {
 }
 
 async function executeRiff(ideaIdx) {
+  flushActiveEdits();
   const idea = ideas[ideaIdx];
-  if (!idea) return;
+  if (!idea) { alert('Idea not found at index ' + ideaIdx); return; }
 
   const riffPrompt = (document.getElementById('riff-prompt-' + ideaIdx) || {}).value || '';
   const riffImagesInput = document.getElementById('riff-images-' + ideaIdx);
@@ -1396,6 +1422,9 @@ function pollStatus() {
       addImageToGrid(img);
     }
 
+    // Disable riff buttons while generating, re-enable when done
+    setRiffButtonsDisabled(!data.done);
+
     if (data.done) {
       clearInterval(pollInterval);
       pollInterval = null;
@@ -1418,7 +1447,7 @@ function addImageToGrid(img) {
     group.innerHTML =
       '<div class="idea-group-header">' +
         '<div class="idea-label">' + (ideaIdx >= 0 ? '<strong>Idea ' + (ideaIdx+1) + ':</strong> ' : '') + escHtml(ideaText) + '</div>' +
-        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm" onclick="toggleRiffPanel(' + ideaIdx + ')">Riff 20 More</button>' : '') +
+        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm riff-btn" onclick="toggleRiffPanel(' + ideaIdx + ')">Riff 20 More</button>' : '') +
       '</div>' +
       (ideaIdx >= 0 ? '<div class="riff-panel" id="riff-panel-' + ideaIdx + '" style="display:none;">' +
         '<div class="mb">' +
