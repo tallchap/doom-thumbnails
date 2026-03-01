@@ -111,7 +111,7 @@ RULES:
 - 16:9 aspect ratio, photorealistic, sharp focus
 - Large expressive faces (40-60% of frame)
 - High contrast, clean composition, one focal point
-- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are: (1) Liron Shapira if his photos are attached, (2) the episode guest if speaker photos are attached. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
+- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are: (1) Liron Shapira if his reference photos are attached — his face MUST faithfully match those reference photos, (2) the episode guest if speaker photos are attached. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
 - Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
 
 Variation #{variation_seed} — make this meaningfully different from other variations."""
@@ -355,9 +355,12 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
         # Detect if Liron is mentioned in this idea
         idea_mentions_liron = "liron" in idea_text.lower()
         liron_section = (
-            "LIRON SHAPIRA (HOST): Liron's reaction photos are attached below. If Liron appears in this "
-            "thumbnail, his face MUST match these photos exactly — same face, features, beard, skin tone. "
-            "Do NOT invent or generate a face for Liron."
+            "LIRON SHAPIRA (HOST) — CRITICAL FACE MATCH REQUIREMENT:\n"
+            "13 reference photos of Liron Shapira are attached below showing him in various expressions. "
+            "Study ALL of these photos carefully. Liron is a man with a beard, dark hair, and olive skin. "
+            "If Liron appears in this thumbnail, his face MUST be a faithful reproduction of the person in these photos — "
+            "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+            "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness from the reference photos."
             if idea_mentions_liron and LIRON_FILES else ""
         )
 
@@ -379,8 +382,10 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
                 contents.extend(brand_sample)
 
             if idea_mentions_liron and LIRON_FILES:
-                contents.append("=== LIRON SHAPIRA (HOST) — this is what Liron looks like. Use these photos for Liron's face ===")
-                contents.extend(LIRON_FILES)
+                contents.append("=== LIRON SHAPIRA (HOST) REFERENCE PHOTOS — these 13 photos show what Liron actually looks like. His face in your output MUST match these photos exactly. Study his facial structure, beard, eyes, skin tone. ===")
+                for i, lf in enumerate(LIRON_FILES):
+                    contents.append(f"[Liron photo {i+1} of {len(LIRON_FILES)}]")
+                    contents.append(lf)
 
             if speaker_refs:
                 contents.append("=== SPEAKER PHOTOS — the thumbnail MUST use these people's real faces ===")
@@ -808,7 +813,15 @@ HTML = r"""<!DOCTYPE html>
   .thumb-card img {
     width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover;
   }
-  .thumb-label { padding: 4px 8px; font-size: 11px; color: #a0a0b0; }
+  .thumb-label {
+    padding: 4px 8px; font-size: 11px; color: #a0a0b0;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .thumb-dl {
+    background: none; border: none; color: #a0a0b0; cursor: pointer;
+    font-size: 14px; padding: 2px 6px; border-radius: 4px;
+  }
+  .thumb-dl:hover { background: #0f3460; color: #4ade80; }
 
   .actions-bar {
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
@@ -968,6 +981,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="actions-bar">
       <span class="selected-count"><span id="selectedCount">0</span> selected</span>
       <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveFinals()" disabled>Save Finals</button>
+      <button class="btn btn-secondary btn-sm" id="downloadBtn" onclick="downloadSelected()" disabled>Download Selected</button>
       <button class="btn btn-secondary btn-sm" onclick="openFolder()">Open Folder</button>
     </div>
   </div>
@@ -1336,6 +1350,8 @@ async function executeRiff(ideaIdx) {
     if (panel) panel.style.display = 'none';
 
     document.getElementById('progressCard').classList.remove('hidden');
+    document.getElementById('gridCard').classList.remove('hidden');
+    document.getElementById('costDisplay').style.display = 'block';
     startPolling();
   } catch(e) {
     alert('Error: ' + e);
@@ -1430,7 +1446,8 @@ function addImageToGrid(img) {
   card.onclick = () => toggleSelect(img.idx);
   card.innerHTML =
     '<img src="/image?path=' + encodeURIComponent(img.path) + '" loading="lazy">' +
-    '<div class="thumb-label">#' + img.idx + '</div>';
+    '<div class="thumb-label"><span>#' + img.idx + '</span>' +
+    '<button class="thumb-dl" onclick="event.stopPropagation(); downloadImage(\'' + encodeURIComponent(img.path) + '\', \'thumb_' + img.idx + '.png\')" title="Download">&#8681;</button></div>';
   grid.appendChild(card);
 }
 
@@ -1451,6 +1468,7 @@ function toggleSelect(idx) {
 function updateSelectedUI() {
   document.getElementById('selectedCount').textContent = selected.size;
   document.getElementById('saveBtn').disabled = selected.size === 0;
+  document.getElementById('downloadBtn').disabled = selected.size === 0;
   const panel = document.getElementById('revisionPanel');
   if (selected.size > 0) panel.classList.add('visible');
   else panel.classList.remove('visible');
@@ -1493,6 +1511,22 @@ function saveFinals() {
 }
 
 function openFolder() { fetch('/open_folder'); }
+
+function downloadImage(encodedPath, filename) {
+  const a = document.createElement('a');
+  a.href = '/download?path=' + encodedPath;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function downloadSelected() {
+  if (selected.size === 0) return;
+  allImages.filter(img => selected.has(img.idx)).forEach(img => {
+    downloadImage(encodeURIComponent(img.path), 'thumb_' + img.idx + '.png');
+  });
+}
 
 function escHtml(s) {
   if (!s) return '';
@@ -1543,6 +1577,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response(safe)
         elif path == "/image":
             self._serve_image(params.get("path", ""))
+        elif path == "/download":
+            self._serve_download(params.get("path", ""))
         elif path == "/vary":
             self._handle_vary(params)
         elif path == "/save_finals":
@@ -1606,6 +1642,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         }.get(ext, "image/png")
         self.send_response(200)
         self.send_header("Content-Type", mime)
+        self.end_headers()
+        with open(filepath, "rb") as f:
+            self.wfile.write(f.read())
+
+    def _serve_download(self, filepath):
+        if not filepath or not os.path.isfile(filepath):
+            self.send_error(404)
+            return
+        real = os.path.realpath(filepath)
+        if not real.startswith(os.path.realpath(THUMBNAILS_DIR)):
+            self.send_error(403)
+            return
+        filename = os.path.basename(filepath)
+        ext = os.path.splitext(filepath)[1].lower()
+        mime = {
+            ".png": "image/png", ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg", ".webp": "image/webp",
+        }.get(ext, "image/png")
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         with open(filepath, "rb") as f:
             self.wfile.write(f.read())
