@@ -1164,9 +1164,9 @@ async function proceedToIdeas() {
   card.classList.remove('hidden');
   document.getElementById('ideasStatus').innerHTML = '<span class="spinner"></span> Generating ideas...';
 
-  // Read transcript if provided
+  // Read transcript if provided (truncate — server only uses first 1500 chars anyway)
   const fileInput = document.getElementById('transcriptFile');
-  if (fileInput.files.length > 0) {
+  if (fileInput.files.length > 0 && !transcript) {
     transcript = await fileInput.files[0].text();
   }
 
@@ -1174,7 +1174,7 @@ async function proceedToIdeas() {
     const fd = new FormData();
     fd.append('title', title);
     fd.append('custom_prompt', document.getElementById('customPrompt').value);
-    fd.append('transcript', transcript);
+    fd.append('transcript', transcript.slice(0, 5000));
     fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
 
     const resp = await fetch('/generate_ideas', { method: 'POST', body: fd });
@@ -1202,7 +1202,7 @@ async function generateMoreIdeas() {
     const fd = new FormData();
     fd.append('title', title);
     fd.append('custom_prompt', document.getElementById('customPrompt').value);
-    fd.append('transcript', transcript);
+    fd.append('transcript', transcript.slice(0, 5000));
     fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
     fd.append('existing_ideas', JSON.stringify(ideas));
 
@@ -1292,7 +1292,7 @@ async function generateThumbnails() {
   fd.append('ideas', JSON.stringify(ideas));
   fd.append('custom_prompt', document.getElementById('customPrompt').value);
   fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
-  fd.append('transcript', transcript);
+  fd.append('transcript', transcript.slice(0, 5000));
 
   // Attach speaker images
   for (const f of document.getElementById('speakerFiles').files) {
@@ -1656,23 +1656,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length)
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
 
-        if path == "/gather_images":
-            self._handle_gather_images(body)
-        elif path == "/generate_ideas":
-            self._handle_generate_ideas(body)
-        elif path == "/generate_from_ideas":
-            self._handle_generate_from_ideas(body)
-        elif path == "/riff_idea":
-            self._handle_riff_idea(body)
-        elif path == "/more_ideas":
-            self._handle_more_ideas(body)
-        elif path == "/revise":
-            self._handle_revise_post(body)
-        else:
-            self.send_error(404)
+            if path == "/gather_images":
+                self._handle_gather_images(body)
+            elif path == "/generate_ideas":
+                self._handle_generate_ideas(body)
+            elif path == "/generate_from_ideas":
+                self._handle_generate_from_ideas(body)
+            elif path == "/riff_idea":
+                self._handle_riff_idea(body)
+            elif path == "/more_ideas":
+                self._handle_more_ideas(body)
+            elif path == "/revise":
+                self._handle_revise_post(body)
+            else:
+                self.send_error(404)
+        except Exception as e:
+            print(f"POST {path} error: {e}")
+            try:
+                self._json_response({"error": f"Server error: {str(e)[:300]}"})
+            except Exception:
+                pass
 
     def _serve_html(self):
         self.send_response(200)
