@@ -166,6 +166,11 @@ status = {
 BRAND_FILES = []
 LIRON_FILES = []
 
+# Keep identity/style references intentionally small and targeted per request.
+MAX_BRAND_REFS_PER_CALL = 3
+MAX_SPEAKER_REFS_PER_CALL = 4
+MAX_LIRON_REFS_PER_CALL = 2
+
 
 def get_client():
     api_key = os.environ.get("GEMINI_API_KEY", "")
@@ -349,31 +354,46 @@ def generate_search_queries(client, title, custom_prompt):
 # ----- Prompt Building -----
 
 
+def _select_identity_refs(refs, max_refs):
+    """Choose a small, deterministic subset of identity refs (avoid random mixing)."""
+    if not refs:
+        return []
+    return list(refs[:max_refs])
+
+
+def _select_brand_refs():
+    """Choose a minimal style-only subset of brand refs per generation call."""
+    if not BRAND_FILES:
+        return []
+    return list(BRAND_FILES[:min(MAX_BRAND_REFS_PER_CALL, len(BRAND_FILES))])
+
+
 def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, additional_instructions, variations_per=3):
     """Build prompt content lists for each idea x N variations.
     Returns list of (idea_idx, variation_num, contents)."""
     custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
     addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
+    selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
     speaker_section = (
-        "SPEAKER LIKENESS (CRITICAL): Photos of the episode's speaker(s) are attached below. "
+        "SPEAKER LIKENESS (CRITICAL): A targeted subset of the episode speaker photo library is attached below. "
         "The person(s) in the thumbnail MUST closely resemble these photos — same face, same features, "
         "same skin tone, same hair. Do NOT use generic faces. The speaker photos are the ground truth "
         "for what the person looks like."
-        if speaker_refs else ""
+        if selected_speaker_refs else ""
     )
 
     prompts = []
     for idea_idx, idea_text in enumerate(ideas):
         # Detect if Liron is mentioned in this idea
         idea_mentions_liron = "liron" in idea_text.lower()
+        selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL) if idea_mentions_liron else []
         liron_section = (
             "LIRON SHAPIRA (HOST) — CRITICAL FACE MATCH REQUIREMENT:\n"
-            "13 reference photos of Liron Shapira are attached below showing him in various expressions. "
-            "Study ALL of these photos carefully. "
+            "A targeted subset of Liron Shapira reference photos is attached below. "
             "If Liron appears in this thumbnail, his face MUST be a faithful reproduction of the person in these photos — "
             "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
             "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness from the reference photos."
-            if idea_mentions_liron and LIRON_FILES else ""
+            if selected_liron_refs else ""
         )
 
         for v in range(variations_per):
@@ -388,20 +408,20 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
             )
             contents = [prompt_text]
 
-            if BRAND_FILES:
-                brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
+            brand_sample = _select_brand_refs()
+            if brand_sample:
                 contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
 
-            if idea_mentions_liron and LIRON_FILES:
-                contents.append("=== LIRON SHAPIRA (HOST) REFERENCE PHOTOS — these 13 photos show what Liron actually looks like. His face in your output MUST match these photos exactly. Study his facial structure, beard, eyes, skin tone. ===")
-                for i, lf in enumerate(LIRON_FILES):
-                    contents.append(f"[Liron photo {i+1} of {len(LIRON_FILES)}]")
+            if selected_liron_refs:
+                contents.append(f"=== LIRON SHAPIRA (HOST) REFERENCE PHOTOS — targeted subset ({len(selected_liron_refs)} image(s)) from the Liron library. His face in your output MUST match these photos exactly. ===")
+                for i, lf in enumerate(selected_liron_refs):
+                    contents.append(f"[Liron photo {i+1} of {len(selected_liron_refs)}]")
                     contents.append(lf)
 
-            if speaker_refs:
-                contents.append("=== SPEAKER PHOTOS — the thumbnail MUST use these people's real faces ===")
-                contents.extend(speaker_refs)
+            if selected_speaker_refs:
+                contents.append("=== SPEAKER PHOTOS — targeted subset; the thumbnail MUST use these people's real faces ===")
+                contents.extend(selected_speaker_refs)
 
             if source_refs:
                 contents.append("=== SOURCE IMAGES — use these as visual reference material ===")
@@ -421,10 +441,11 @@ def build_riff_prompts(idea_text, idea_idx, speaker_refs, source_refs, custom_pr
 
 def build_variation_prompts(selected_images, speaker_refs, count_per=3):
     """Build variation prompts from selected images."""
+    selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
     speaker_section = (
-        "SPEAKER LIKENESS (CRITICAL): Speaker photos are attached — the person(s) MUST closely "
+        "SPEAKER LIKENESS (CRITICAL): A targeted subset of speaker photos is attached — the person(s) MUST closely "
         "resemble these photos. Same face, features, skin tone, hair."
-        if speaker_refs else ""
+        if selected_speaker_refs else ""
     )
     prompts = []
     for img in selected_images:
@@ -434,23 +455,24 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
                 variation_seed=v + 1,
             )
             contents = [prompt_text, img]
-            if BRAND_FILES:
-                brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
+            brand_sample = _select_brand_refs()
+            if brand_sample:
                 contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
-            if speaker_refs:
-                contents.append("=== SPEAKER PHOTOS ===")
-                contents.extend(speaker_refs)
+            if selected_speaker_refs:
+                contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
+                contents.extend(selected_speaker_refs)
             prompts.append((-1, v, contents))
     return prompts
 
 
 def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3):
     """Build revision prompts with custom instructions."""
+    selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
     speaker_section = (
-        "SPEAKER LIKENESS (CRITICAL): Speaker photos are attached — the person(s) MUST closely "
+        "SPEAKER LIKENESS (CRITICAL): A targeted subset of speaker photos is attached — the person(s) MUST closely "
         "resemble these photos. Same face, features, skin tone, hair."
-        if speaker_refs else ""
+        if selected_speaker_refs else ""
     )
     prompts = []
     for img in selected_images:
@@ -461,13 +483,13 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
                 variation_seed=v + 1,
             )
             contents = [prompt_text, img]
-            if BRAND_FILES:
-                brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
+            brand_sample = _select_brand_refs()
+            if brand_sample:
                 contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
-            if speaker_refs:
-                contents.append("=== SPEAKER PHOTOS ===")
-                contents.extend(speaker_refs)
+            if selected_speaker_refs:
+                contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
+                contents.extend(selected_speaker_refs)
             prompts.append((-1, v, contents))
     return prompts
 
