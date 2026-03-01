@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Doom Debates Thumbnail Generator — Nano Banana Pro
+Doom Debates Thumbnail Generator v2 — Idea-First Workflow
 
-Bulk-generates YouTube thumbnail candidates via Google Gemini image generation,
-with a browser UI for selection, revision, and iteration.
+Generates YouTube thumbnail candidates via Google Gemini image generation,
+with a browser UI for idea generation, source image gathering, and iteration.
 
 Usage:
     python thumbnail_gen.py
@@ -27,6 +27,7 @@ import threading
 import urllib.parse
 import webbrowser
 
+import requests
 from dotenv import load_dotenv
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,16 +44,12 @@ PORT = int(os.environ.get("PORT", 9200))
 APP_USER = os.environ.get("APP_USERNAME", "doom")
 APP_PASS = os.environ.get("APP_PASSWORD", "")
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
+TEXT_MODEL = "gemini-2.5-flash"
 MAX_CONCURRENT = 15
-DEFAULT_COUNT = 100
 THUMBNAILS_DIR = os.path.join(SCRIPT_DIR, "thumbnails")
 EXAMPLES_DIR = os.path.join(SCRIPT_DIR, "doom_debates_thumbnails")
-
-DEFAULT_STYLE = """VISUAL STYLE: Choose colors, lighting, and mood that match the energy of the transcript.
-If the conversation is tense or confrontational — use bold contrasts, dramatic lighting, split compositions.
-If it's hopeful or exploratory — use warmer tones, open compositions, curious expressions.
-If it's technical or analytical — use clean modern aesthetics, sharp lines, cool tones.
-Let the content dictate the look. Optimize for maximum clicks and watch time."""
+BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
+COST_PER_IMAGE = 0.045  # $0.045 per 512px image
 
 BRAND_GUIDE = """BRAND — "DOOM DEBATES":
 YouTube channel by Liron Shapira about AI existential risk.
@@ -67,26 +64,46 @@ Key brand traits:
 - Overall feel: high-stakes, provocative, debate energy
 - Color palette: deep reds, blacks, whites, with yellow accents for emphasis"""
 
-MEGA_PROMPT = """Generate a YouTube thumbnail image.
+IDEA_GENERATION_PROMPT = """You are a YouTube thumbnail strategist for "Doom Debates", a channel about AI existential risk hosted by Liron Shapira.
 
-MOST IMPORTANT RULE — TEXT: The image must contain ONLY ONE text element. This single text element must be 1-5 words. No subtitles, no secondary text, no labels, no captions, no watermarks. Just ONE short punchy headline. Examples: "WHO WINS?", "AI TAKEOVER", "THE END?", "P(DOOM)". Nothing longer. If in doubt, use FEWER words.
+Generate exactly 10 thumbnail concept ideas for this episode.
 
-STEP 1 — CONCEPT FROM TRANSCRIPT:
-Read the episode transcript below and decide what the thumbnail should depict. What's the most compelling, clickable visual moment?
+EPISODE TITLE: {title}
+{custom_prompt_section}
+{transcript_section}
 
-EPISODE TRANSCRIPT:
-{transcript_excerpt}
+Each idea should be a short, vivid visual description (1-2 sentences) that would make a compelling, clickable thumbnail. Include specific imagery, people positioning, and a suggested headline (1-5 words).
 
-{visual_concept_section}
+{additional_instructions}
 
-STEP 2 — APPLY BRAND STYLE:
-Now apply the Doom Debates brand style to your concept. Use the attached brand reference thumbnails for visual style ONLY (colors, composition, typography, energy). Do NOT copy any faces or people from the brand references.
+Return as a JSON array of exactly 10 strings. Example:
+["Doomsday clock at 11:59 with a terminator looming behind Liron, headline: TIMES UP", "Split screen of human brain vs AI chip, both glowing red, headline: WHO WINS?"]"""
+
+SEARCH_QUERY_PROMPT = """Given this episode info, suggest 3-5 image search queries to find useful source images for a YouTube thumbnail. Return as a JSON array of strings.
+
+EPISODE TITLE: {title}
+{custom_prompt_section}
+
+Focus on: guest headshots, topic-relevant imagery (logos, icons, dramatic visuals), anything that could be composited into a thumbnail.
+Example: ["Daniel Kokotajlo headshot", "doomsday clock icon", "AI robot dramatic red lighting"]"""
+
+IDEA_THUMBNAIL_PROMPT = """Generate a YouTube thumbnail image.
+
+MOST IMPORTANT RULE — TEXT: The image must contain ONLY ONE text element. This single text element must be 1-5 words. No subtitles, no secondary text, no labels, no captions, no watermarks. Just ONE short punchy headline. If in doubt, use FEWER words.
+
+THUMBNAIL CONCEPT:
+{idea_text}
+
+{custom_prompt_section}
+
+BRAND STYLE:
+Apply the Doom Debates brand style. Use the attached brand reference thumbnails for visual style ONLY (colors, composition, typography, energy). Do NOT copy any faces or people from the brand references.
 
 {brand_guide}
 
 {speaker_section}
 
-{inspiration_section}
+{additional_instructions}
 
 RULES:
 - 16:9 aspect ratio, photorealistic, sharp focus
@@ -119,37 +136,6 @@ Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one s
 
 Variation #{variation_seed} — try something meaningfully different."""
 
-INSPO_PROMPT = """Generate a YouTube thumbnail image.
-
-MOST IMPORTANT RULE — TEXT: The image must contain ONLY ONE text element. This single text element must be 1-5 words. No subtitles, no secondary text, no labels, no captions, no watermarks. Just ONE short punchy headline. Examples: "WHO WINS?", "AI TAKEOVER", "THE END?", "P(DOOM)". Nothing longer. If in doubt, use FEWER words.
-
-STEP 1 — CONCEPT FROM TRANSCRIPT:
-Read the episode transcript below and decide what the thumbnail should depict. What's the most compelling, clickable visual moment?
-
-EPISODE TRANSCRIPT:
-{transcript_excerpt}
-
-{visual_concept_section}
-
-STEP 2 — APPLY BRAND STYLE:
-Now apply the Doom Debates brand style to your concept. Use the attached brand reference thumbnails for visual style ONLY (colors, composition, typography, energy). Do NOT copy any faces or people from the brand references.
-
-{brand_guide}
-
-{speaker_section}
-
-STEP 3 — MATCH INSPIRATION:
-An inspiration thumbnail is attached. Heavily match its visual style, composition, color treatment, and energy. Your thumbnail should look like it came from the same designer as the inspiration image. Apply the inspiration's style to the concept you chose in Step 1.
-
-RULES:
-- 16:9 aspect ratio, photorealistic, sharp focus
-- Large expressive faces (40-60% of frame)
-- High contrast, clean composition, one focal point
-- The ONLY people in the thumbnail should be from the speaker photos (if provided), NOT from brand references
-- Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
-
-Variation #{variation_seed} — make this meaningfully different from other variations."""
-
 # ----- State -----
 
 status = {
@@ -164,7 +150,11 @@ status = {
     "output_dir": "",
     "episode_dir": "",
     "speakers": [],
+    "sources": [],
     "round_num": 0,
+    "ideas": [],
+    "idea_groups": {},
+    "cost": 0.0,
 }
 
 # ----- API Client & File API -----
@@ -213,7 +203,6 @@ def upload_files_from_bytes(client, file_bytes_list, name_prefix):
     refs = []
     for i, data in enumerate(file_bytes_list):
         try:
-            # Write to temp file for upload
             tmp_path = os.path.join(THUMBNAILS_DIR, f"_tmp_{name_prefix}_{i+1}.jpg")
             with open(tmp_path, "wb") as f:
                 f.write(data)
@@ -228,59 +217,99 @@ def upload_files_from_bytes(client, file_bytes_list, name_prefix):
     return refs
 
 
-# ----- Image Loading -----
+# ----- Brave Search -----
 
 
-def load_images_from_dir(dirpath, max_count=5, randomize=False):
-    """Load images from a directory as PIL Images."""
-    images = []
-    if not os.path.isdir(dirpath):
-        return images
-    files = sorted(
-        f for f in os.listdir(dirpath)
-        if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+def search_images_brave(queries):
+    """Search Brave Image API for source images."""
+    if not BRAVE_API_KEY:
+        return []
+    results = []
+    for query in queries:
+        try:
+            resp = requests.get(
+                "https://api.search.brave.com/res/v1/images/search",
+                headers={"X-Subscription-Token": BRAVE_API_KEY, "Accept": "application/json"},
+                params={"q": query, "count": 5, "safesearch": "off"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                for r in data.get("results", []):
+                    thumb_url = ""
+                    thumb_obj = r.get("thumbnail", {})
+                    if isinstance(thumb_obj, dict):
+                        thumb_url = thumb_obj.get("src", "")
+                    props = r.get("properties", {})
+                    img_url = ""
+                    if isinstance(props, dict):
+                        img_url = props.get("url", "")
+                    if not img_url:
+                        img_url = r.get("url", "")
+                    if thumb_url or img_url:
+                        results.append({
+                            "url": img_url,
+                            "thumbnail": thumb_url or img_url,
+                            "title": r.get("title", ""),
+                            "query": query,
+                        })
+        except Exception as e:
+            print(f"Brave search error for '{query}': {e}")
+    return results
+
+
+def download_image_bytes(url, timeout=10):
+    """Download an image from URL, return bytes or None."""
+    try:
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        if resp.status_code == 200 and "image" in resp.headers.get("content-type", ""):
+            return resp.content
+    except Exception:
+        pass
+    return None
+
+
+# ----- Idea Generation -----
+
+
+def generate_ideas(client, title, custom_prompt, transcript, additional_instructions):
+    """Use Gemini text model to generate 10 thumbnail ideas. Returns list of strings."""
+    custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
+    transcript_section = f"EPISODE TRANSCRIPT (excerpt):\n{transcript[:1500]}" if transcript else ""
+    addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
+
+    prompt = IDEA_GENERATION_PROMPT.format(
+        title=title,
+        custom_prompt_section=custom_section,
+        transcript_section=transcript_section,
+        additional_instructions=addl,
     )
-    if randomize:
-        random.shuffle(files)
-    for f in files[:max_count]:
-        try:
-            img = Image.open(os.path.join(dirpath, f))
-            img.load()
-            images.append(img)
-        except Exception:
-            pass
-    return images
+    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
+    text = response.text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return json.loads(text)
 
 
-def load_images_from_bytes(file_bytes_list):
-    """Load images from raw bytes (uploaded files)."""
-    images = []
-    for data in file_bytes_list:
-        try:
-            img = Image.open(io.BytesIO(data))
-            img.load()
-            images.append(img)
-        except Exception:
-            pass
-    return images
+def generate_search_queries(client, title, custom_prompt):
+    """Use Gemini text model to suggest image search queries. Returns list of strings."""
+    custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
+    prompt = SEARCH_QUERY_PROMPT.format(title=title, custom_prompt_section=custom_section)
+    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
+    text = response.text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return json.loads(text)
 
 
 # ----- Prompt Building -----
 
 
-def build_all_prompts(transcript, visual_concept, speaker_refs, inspo_refs, count=100):
-    """Build `count` distinct prompt+image content lists for Gemini.
-
-    If inspo images are provided, splits 50/50 between transcript-driven (MEGA_PROMPT)
-    and inspo-driven (INSPO_PROMPT) streams.
-    """
-    transcript_excerpt = transcript[:1500] if transcript else ""
-
-    if visual_concept.strip():
-        visual_section = f"VISUAL CONCEPT: {visual_concept}"
-    else:
-        visual_section = DEFAULT_STYLE
-
+def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, additional_instructions, variations_per=3):
+    """Build prompt content lists for each idea x N variations.
+    Returns list of (idea_idx, variation_num, contents)."""
+    custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
+    addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
     speaker_section = (
         "SPEAKER LIKENESS (CRITICAL): Photos of the episode's speaker(s) are attached below. "
         "The person(s) in the thumbnail MUST closely resemble these photos — same face, same features, "
@@ -289,74 +318,45 @@ def build_all_prompts(transcript, visual_concept, speaker_refs, inspo_refs, coun
         if speaker_refs else ""
     )
 
-    inspiration_section = (
-        "Inspiration thumbnails are attached below — draw style inspiration from these."
-        if inspo_refs else ""
-    )
-
-    # Split count between transcript-driven and inspo-driven streams
-    if inspo_refs:
-        count_a = count // 2
-        count_b = count - count_a
-    else:
-        count_a = count
-        count_b = 0
-
     prompts = []
+    for idea_idx, idea_text in enumerate(ideas):
+        for v in range(variations_per):
+            prompt_text = IDEA_THUMBNAIL_PROMPT.format(
+                idea_text=idea_text,
+                custom_prompt_section=custom_section,
+                brand_guide=BRAND_GUIDE,
+                speaker_section=speaker_section,
+                additional_instructions=addl,
+                variation_seed=v + 1,
+            )
+            contents = [prompt_text]
 
-    # Stream A: transcript-driven (MEGA_PROMPT)
-    for i in range(count_a):
-        prompt_text = MEGA_PROMPT.format(
-            transcript_excerpt=transcript_excerpt,
-            visual_concept_section=visual_section,
-            speaker_section=speaker_section,
-            inspiration_section=inspiration_section,
-            brand_guide=BRAND_GUIDE,
-            variation_seed=i + 1,
-        )
-        contents = [prompt_text]
-        if BRAND_FILES:
-            brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
-            contents.append("=== DOOM DEBATES BRAND — match ONLY the visual style (colors, composition, typography, energy). Do NOT copy any faces or people from these reference images ===")
-            contents.extend(brand_sample)
-        if speaker_refs:
-            contents.append("=== SPEAKER PHOTOS — the thumbnail MUST use these people's real faces ===")
-            contents.extend(speaker_refs)
-        if inspo_refs:
-            contents.append("=== INSPIRATION — draw style inspiration from these ===")
-            contents.extend(inspo_refs)
-        prompts.append(contents)
+            if BRAND_FILES:
+                brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
+                contents.append("=== DOOM DEBATES BRAND — match ONLY the visual style (colors, composition, typography, energy). Do NOT copy any faces or people from these reference images ===")
+                contents.extend(brand_sample)
 
-    # Stream B: inspo-driven (INSPO_PROMPT) — one sub-batch PER inspo image
-    if inspo_refs and count_b > 0:
-        per_inspo = max(1, count_b // len(inspo_refs))
-        for inspo_ref in inspo_refs:
-            for i in range(per_inspo):
-                prompt_text = INSPO_PROMPT.format(
-                    transcript_excerpt=transcript_excerpt,
-                    visual_concept_section=visual_section,
-                    speaker_section=speaker_section,
-                    brand_guide=BRAND_GUIDE,
-                    variation_seed=i + 1,
-                )
-                contents = [prompt_text]
-                # Single inspo image first (highest priority)
-                contents.append("=== INSPIRATION — heavily match this thumbnail's visual style, composition, and energy ===")
-                contents.append(inspo_ref)
-                if BRAND_FILES:
-                    brand_sample = random.sample(BRAND_FILES, min(10, len(BRAND_FILES)))
-                    contents.append("=== DOOM DEBATES BRAND — visual style only, do NOT copy faces from these ===")
-                    contents.extend(brand_sample)
-                if speaker_refs:
-                    contents.append("=== SPEAKER PHOTOS — use these people's real faces ===")
-                    contents.extend(speaker_refs)
-                prompts.append(contents)
+            if speaker_refs:
+                contents.append("=== SPEAKER PHOTOS — the thumbnail MUST use these people's real faces ===")
+                contents.extend(speaker_refs)
 
-    random.shuffle(prompts)  # Mix streams so results aren't grouped
+            if source_refs:
+                contents.append("=== SOURCE IMAGES — use these as visual reference material ===")
+                contents.extend(source_refs)
+
+            prompts.append((idea_idx, v, contents))
+
     return prompts
 
 
-def build_variation_prompts(selected_images, speaker_refs, count_per=15):
+def build_riff_prompts(idea_text, idea_idx, speaker_refs, source_refs, custom_prompt, additional_instructions, count=20):
+    """Build prompts for riffing on a single idea."""
+    return build_idea_prompts(
+        [idea_text], speaker_refs, source_refs, custom_prompt, additional_instructions, variations_per=count
+    )
+
+
+def build_variation_prompts(selected_images, speaker_refs, count_per=3):
     """Build variation prompts from selected images."""
     speaker_section = (
         "SPEAKER LIKENESS (CRITICAL): Speaker photos are attached — the person(s) MUST closely "
@@ -378,11 +378,11 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=15):
             if speaker_refs:
                 contents.append("=== SPEAKER PHOTOS ===")
                 contents.extend(speaker_refs)
-            prompts.append(contents)
+            prompts.append((-1, v, contents))
     return prompts
 
 
-def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=15):
+def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3):
     """Build revision prompts with custom instructions."""
     speaker_section = (
         "SPEAKER LIKENESS (CRITICAL): Speaker photos are attached — the person(s) MUST closely "
@@ -405,7 +405,7 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
             if speaker_refs:
                 contents.append("=== SPEAKER PHOTOS ===")
                 contents.extend(speaker_refs)
-            prompts.append(contents)
+            prompts.append((-1, v, contents))
     return prompts
 
 
@@ -413,13 +413,14 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
 
 
 async def generate_batch(client, prompts, output_dir, phase="round1"):
-    """Fire parallel Gemini API calls and save results."""
+    """Fire parallel Gemini API calls and save results.
+    prompts is a list of (idea_idx, variation_num, contents)."""
     global status
     os.makedirs(output_dir, exist_ok=True)
     sem = asyncio.Semaphore(MAX_CONCURRENT)
     start_idx = len(status["images"])
 
-    async def generate_one(idx, contents):
+    async def generate_one(idx, idea_idx, contents):
         async with sem:
             for attempt in range(3):
                 try:
@@ -445,12 +446,19 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                                 img.save(filepath, "PNG")
 
                                 status["completed"] += 1
-                                status["images"].append({
+                                status["cost"] += COST_PER_IMAGE
+                                img_entry = {
                                     "idx": idx,
                                     "path": filepath,
                                     "filename": filename,
                                     "status": "ok",
-                                })
+                                    "idea_idx": idea_idx,
+                                }
+                                status["images"].append(img_entry)
+
+                                if idea_idx >= 0:
+                                    status["idea_groups"].setdefault(idea_idx, []).append(img_entry)
+
                                 status["log"].append(
                                     f"[{status['completed']}/{status['total']}] thumb_{idx:03d}.png OK"
                                 )
@@ -473,7 +481,10 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                     status["log"].append(f"thumb_{idx:03d}: ERROR — {err[:120]}")
                     return None
 
-    tasks = [generate_one(start_idx + i + 1, c) for i, c in enumerate(prompts)]
+    tasks = [
+        generate_one(start_idx + i + 1, idea_idx, contents)
+        for i, (idea_idx, _var, contents) in enumerate(prompts)
+    ]
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
@@ -489,6 +500,8 @@ def run_generation(client, prompts, output_dir, phase="round1"):
     status["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
     if phase == "round1":
         status["images"] = []
+        status["idea_groups"] = {}
+        status["cost"] = 0.0
     status["done"] = False
     status["output_dir"] = output_dir
 
@@ -501,7 +514,8 @@ def run_generation(client, prompts, output_dir, phase="round1"):
                 generate_batch(client, prompts, output_dir, phase)
             )
             status["log"].append(
-                f"Done! {len(results)} images generated, {status['errors']} errors."
+                f"Done! {len(results)} images generated, {status['errors']} errors. "
+                f"Estimated cost: ${status['cost']:.2f}"
             )
         except Exception as e:
             status["log"].append(f"FATAL ERROR: {e}")
@@ -544,7 +558,7 @@ def parse_multipart(headers, body):
     boundary = boundary.encode()
 
     fields = {}
-    files = {}  # name -> list of bytes
+    files = {}
 
     parts = body.split(b"--" + boundary)
     for part in parts:
@@ -559,7 +573,6 @@ def parse_multipart(headers, body):
         else:
             continue
 
-        # Strip trailing \r\n-- from content
         if content.endswith(b"\r\n"):
             content = content[:-2]
 
@@ -578,7 +591,7 @@ def parse_multipart(headers, body):
             continue
 
         if filename:
-            if filename:  # non-empty filename means actual file
+            if filename:
                 files.setdefault(name, []).append(content)
         else:
             fields[name] = content.decode("utf-8", errors="replace")
@@ -592,7 +605,7 @@ HTML = r"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Thumbnail Generator — Nano Banana Pro</title>
+<title>Doom Debates — Thumbnail Generator v2</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -606,18 +619,19 @@ HTML = r"""<!DOCTYPE html>
     background: #16213e; border-radius: 12px; padding: 24px;
     margin-bottom: 16px; border: 1px solid #0f3460;
   }
+  .card.hidden { display: none; }
   label.section {
     display: block; font-size: 13px; color: #a0a0b0; margin-bottom: 6px;
     font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
   }
   .field-hint { font-size: 12px; color: #666; margin-top: 4px; margin-bottom: 12px; }
-  textarea {
+  input[type="text"], textarea {
     width: 100%; padding: 10px 14px; border-radius: 8px;
     border: 1px solid #0f3460; background: #0d1b3e; color: #fff;
     font-size: 15px; outline: none; font-family: inherit;
-    resize: vertical;
   }
-  textarea:focus { border-color: #e94560; }
+  textarea { resize: vertical; }
+  input[type="text"]:focus, textarea:focus { border-color: #e94560; }
   .mb { margin-bottom: 16px; }
 
   .file-upload {
@@ -626,15 +640,11 @@ HTML = r"""<!DOCTYPE html>
     position: relative;
   }
   .file-upload:hover { border-color: #e94560; }
-  .file-upload.dragover {
-    border-color: #e94560; background: rgba(233,69,96,0.08);
-  }
+  .file-upload.dragover { border-color: #e94560; background: rgba(233,69,96,0.08); }
   .file-upload input[type="file"] {
     position: absolute; inset: 0; opacity: 0; cursor: pointer;
   }
-  .file-upload .upload-label {
-    color: #a0a0b0; font-size: 14px;
-  }
+  .file-upload .upload-label { color: #a0a0b0; font-size: 14px; }
   .file-upload .upload-label strong { color: #e94560; }
   .file-previews {
     display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;
@@ -646,9 +656,9 @@ HTML = r"""<!DOCTYPE html>
   }
 
   .btn {
-    padding: 12px 28px; border-radius: 8px; border: none;
-    font-size: 16px; font-weight: 600; cursor: pointer;
-    transition: all 0.15s;
+    padding: 10px 24px; border-radius: 8px; border: none;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px;
   }
   .btn-primary { background: #e94560; color: #fff; }
   .btn-primary:hover { background: #d63851; }
@@ -656,6 +666,7 @@ HTML = r"""<!DOCTYPE html>
   .btn-secondary { background: #0f3460; color: #fff; }
   .btn-secondary:hover { background: #1a4a80; }
   .btn-secondary:disabled { background: #333; cursor: not-allowed; }
+  .btn-sm { padding: 6px 14px; font-size: 13px; }
 
   .progress-bar {
     width: 100%; height: 8px; background: #0d1b3e; border-radius: 4px;
@@ -673,16 +684,72 @@ HTML = r"""<!DOCTYPE html>
   }
   .log div { margin-bottom: 2px; }
 
+  /* Source image gallery */
+  .source-gallery {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px;
+  }
+  .source-item {
+    position: relative; width: 120px; border-radius: 8px; overflow: hidden;
+    border: 2px solid #0f3460; background: #0d1b3e;
+  }
+  .source-item img { width: 100%; height: 80px; object-fit: cover; display: block; }
+  .source-item .source-title {
+    padding: 4px 6px; font-size: 10px; color: #a0a0b0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .source-item .remove-btn {
+    position: absolute; top: 4px; right: 4px; background: rgba(233,69,96,0.9);
+    color: #fff; border: none; border-radius: 50%; width: 22px; height: 22px;
+    cursor: pointer; font-size: 14px; line-height: 22px; text-align: center;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .source-item .remove-btn:hover { background: #e94560; }
+
+  /* Ideas list */
+  .idea-item {
+    display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+    background: #0d1b3e; border-radius: 8px; margin-bottom: 8px;
+    border: 1px solid #0f3460;
+  }
+  .idea-num {
+    color: #e94560; font-weight: 700; font-size: 16px; min-width: 28px;
+    padding-top: 2px;
+  }
+  .idea-text {
+    flex: 1; color: #e0e0e0; font-size: 14px; line-height: 1.4;
+  }
+  .idea-text textarea {
+    font-size: 14px; padding: 4px 8px; min-height: 40px;
+  }
+  .idea-actions { display: flex; gap: 6px; align-items: center; }
+  .idea-actions button {
+    background: none; border: none; cursor: pointer; font-size: 16px;
+    color: #a0a0b0; padding: 4px;
+  }
+  .idea-actions button:hover { color: #e94560; }
+
+  /* Thumbnail grid grouped by idea */
+  .idea-group {
+    margin-bottom: 24px; border: 1px solid #0f3460; border-radius: 10px;
+    padding: 16px; background: #0d1b3e;
+  }
+  .idea-group-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 12px; gap: 12px; flex-wrap: wrap;
+  }
+  .idea-group-header .idea-label {
+    color: #e94560; font-weight: 600; font-size: 14px; flex: 1;
+  }
   .thumb-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 12px; padding: 0; margin-top: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
   }
   .thumb-card {
     position: relative; border-radius: 8px; overflow: hidden;
     border: 3px solid transparent; cursor: pointer;
     transition: border-color 0.15s, transform 0.1s;
-    background: #0d1b3e;
+    background: #16213e;
   }
   .thumb-card:hover { transform: scale(1.02); }
   .thumb-card.selected { border-color: #4ade80; }
@@ -695,16 +762,12 @@ HTML = r"""<!DOCTYPE html>
   .thumb-card img {
     width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover;
   }
-  .thumb-label {
-    padding: 6px 10px; font-size: 12px; color: #a0a0b0;
-  }
+  .thumb-label { padding: 4px 8px; font-size: 11px; color: #a0a0b0; }
 
   .actions-bar {
     display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
   }
-  .selected-count {
-    color: #4ade80; font-weight: 600; font-size: 14px;
-  }
+  .selected-count { color: #4ade80; font-weight: 600; font-size: 14px; }
 
   .revision-panel {
     margin-top: 16px; padding: 16px; background: #0d1b3e;
@@ -712,15 +775,8 @@ HTML = r"""<!DOCTYPE html>
     display: none;
   }
   .revision-panel.visible { display: block; }
-  .revision-panel textarea {
-    margin-bottom: 12px;
-  }
-  .revision-panel .revision-actions {
-    display: flex; gap: 12px;
-  }
-
-  #inputSection, #progressSection, #gridSection { display: none; }
-  .active { display: block !important; }
+  .revision-panel textarea { margin-bottom: 12px; }
+  .revision-panel .revision-actions { display: flex; gap: 12px; }
 
   .section-header {
     display: flex; justify-content: space-between; align-items: center;
@@ -731,113 +787,181 @@ HTML = r"""<!DOCTYPE html>
   .tag { display: inline-block; padding: 2px 8px; border-radius: 4px;
     font-size: 11px; background: #0f3460; color: #a0a0b0; }
   .tag-required { background: #e94560; color: #fff; }
+
+  .cost-display {
+    position: fixed; bottom: 16px; right: 16px; background: #16213e;
+    border: 1px solid #0f3460; border-radius: 8px; padding: 8px 14px;
+    font-size: 13px; color: #a0a0b0; z-index: 100;
+  }
+  .cost-display strong { color: #4ade80; }
+
+  .step-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%; background: #e94560;
+    color: #fff; font-weight: 700; font-size: 14px; margin-right: 8px;
+    flex-shrink: 0;
+  }
+
+  .spinner {
+    display: inline-block; width: 18px; height: 18px;
+    border: 2px solid #a0a0b0; border-top-color: #e94560;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .btn-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 </style>
 </head>
 <body>
 
-<h1>Thumbnail Generator</h1>
-<div class="subtitle">Model: Nano Banana 2 (gemini-3.1-flash-image-preview) — Bulk-generate thumbnails, pick your favorites</div>
+<h1>Doom Debates — Thumbnail Generator</h1>
+<div class="subtitle">Model: Nano Banana 2 (gemini-3.1-flash-image-preview) — Idea-first workflow</div>
 
-<!-- INPUT FORM -->
-<div id="inputSection" class="active">
-  <div class="card">
-    <div class="mb">
-      <label class="section">Episode Transcript <span class="tag tag-required">Required</span></label>
-      <div class="file-upload" id="transcriptUpload">
-        <input type="file" id="transcriptFile" accept=".txt,.md,.text,.rtf,.doc,.docx,.pdf,.srt,.vtt">
-        <div class="upload-label"><strong>Click to browse</strong> or drag & drop a transcript file</div>
-        <div id="transcriptFileName" style="color:#4ade80;margin-top:8px;font-size:13px;"></div>
-      </div>
-      <div class="field-hint">Upload a transcript file (.txt, .md, .srt, etc). The more context, the better the thumbnails.</div>
-    </div>
+<!-- STEP 1: INPUTS -->
+<div class="card" id="inputCard">
+  <div class="section-header">
+    <h2><span class="step-num">1</span> Episode Info</h2>
+  </div>
 
-    <div class="mb">
-      <label class="section">Visual Concept <span class="tag">Optional</span></label>
-      <textarea id="visualConcept" rows="3" placeholder="e.g. Two faces in dramatic confrontation, split red/blue background, text says 'P(DOOM)?'&#10;&#10;Leave blank for automatic style (YouTube best practices + Doom Debates branding)"></textarea>
-      <div class="field-hint">Describe what you want to see. If left blank, uses a default dramatic podcast style.</div>
+  <div class="mb">
+    <label class="section">Episode Title <span class="tag tag-required">Required</span></label>
+    <input type="text" id="episodeTitle" placeholder="e.g. Is GPT-5 the End? with Daniel Kokotajlo">
+  </div>
+
+  <div class="mb">
+    <label class="section">Custom Prompt Info <span class="tag">Optional</span></label>
+    <textarea id="customPrompt" rows="2" placeholder="e.g. Guest: Daniel Kokotajlo, former OpenAI researcher. Focus on AI timelines and existential risk."></textarea>
+    <div class="field-hint">Any context that should inform the thumbnail concepts and generation.</div>
+  </div>
+
+  <div class="mb">
+    <label class="section">Episode Transcript <span class="tag">Optional</span></label>
+    <div class="file-upload" id="transcriptUpload">
+      <input type="file" id="transcriptFile" accept=".txt,.md,.text,.rtf,.doc,.docx,.pdf,.srt,.vtt">
+      <div class="upload-label"><strong>Click to browse</strong> or drag & drop a transcript file</div>
+      <div id="transcriptFileName" style="color:#4ade80;margin-top:8px;font-size:13px;"></div>
     </div>
   </div>
 
-  <div class="card">
-    <div class="mb">
-      <label class="section">Speaker Photos <span class="tag">Optional</span></label>
-      <div class="file-upload" id="speakerUpload">
-        <input type="file" id="speakerFiles" multiple accept="image/*">
-        <div class="upload-label"><strong>Click to browse</strong> or drag & drop speaker photos</div>
-        <div class="file-previews" id="speakerPreviews"></div>
-      </div>
-      <div class="field-hint">Upload photos of the guest/host so generated faces match their likeness.</div>
+  <div class="mb">
+    <label class="section">Speaker Images <span class="tag">Optional</span></label>
+    <div class="file-upload" id="speakerUpload">
+      <input type="file" id="speakerFiles" multiple accept="image/*">
+      <div class="upload-label"><strong>Click to browse</strong> or drag & drop speaker photos</div>
+      <div class="file-previews" id="speakerPreviews"></div>
     </div>
-
-    <div class="mb">
-      <label class="section">Inspiration Thumbnails <span class="tag">Optional</span></label>
-      <div class="file-upload" id="inspoUpload">
-        <input type="file" id="inspoFiles" multiple accept="image/*">
-        <div class="upload-label"><strong>Click to browse</strong> or drag & drop example thumbnails</div>
-        <div class="file-previews" id="inspoPreviews"></div>
-      </div>
-      <div class="field-hint">Upload thumbnails you like as style references. If none provided, uses YouTube thumbnail best practices.</div>
-    </div>
+    <div class="field-hint">Photos of speakers — the generated faces will match these likenesses.</div>
   </div>
 
-  <div style="display:flex;gap:12px;align-items:center;">
-    <label class="section" style="margin:0;">Count</label>
-    <input type="number" id="countInput" min="5" max="100" value="20" step="5"
-           style="width:80px; padding:8px; border-radius:8px; border:1px solid #0f3460;
-           background:#0d1b3e; color:#fff; font-size:15px;">
-    <button class="btn btn-primary" id="generateBtn" onclick="startGeneration()">Generate Thumbnails</button>
+  <div class="mb">
+    <label class="section">Source Images <span class="tag">Optional</span></label>
+    <div class="file-upload" id="sourceUpload">
+      <input type="file" id="sourceFiles" multiple accept="image/*">
+      <div class="upload-label"><strong>Click to browse</strong> or drag & drop logos, reference visuals, etc.</div>
+      <div class="file-previews" id="sourcePreviews"></div>
+    </div>
+    <div class="field-hint">Logos, icons, or reference images to use as visual material (not faces).</div>
   </div>
-</div>
 
-<!-- PROGRESS -->
-<div id="progressSection">
-  <div class="card">
-    <div class="section-header">
-      <h2 id="phaseLabel">Generating...</h2>
-      <span id="progressText" style="color:#a0a0b0;">0 / 100</span>
-    </div>
-    <div class="progress-bar">
-      <div class="progress-fill" id="progressFill" style="width:0%"></div>
-    </div>
-    <div class="log" id="logArea"></div>
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="gatherBtn" onclick="gatherSourceImages()">Gather Source Images from Web</button>
+    <button class="btn btn-primary" id="skipToIdeasBtn" onclick="skipToIdeas()">Skip to Generate Ideas</button>
   </div>
 </div>
 
-<!-- GRID + SELECTION -->
-<div id="gridSection">
-  <div class="card">
-    <div class="section-header">
-      <h2 id="gridLabel">Select Your Favorites</h2>
-      <div class="actions-bar">
-        <span class="selected-count"><span id="selectedCount">0</span> selected</span>
-        <button class="btn btn-primary" id="saveBtn" onclick="saveFinals()" disabled>Save Finals</button>
-        <button class="btn btn-secondary" onclick="openFolder()">Open Folder</button>
-      </div>
-    </div>
-
-    <div class="revision-panel" id="revisionPanel">
-      <label class="section">Revise Selected</label>
-      <textarea id="revisionPrompt" rows="2" placeholder="e.g. Make the background darker, add more fire, change text to EXTINCTION, make the faces larger..."></textarea>
-      <div class="revision-actions">
-        <button class="btn btn-primary" id="reviseBtn" onclick="startRevision()">Revise with Prompt</button>
-        <button class="btn btn-secondary" id="similarBtn" onclick="startVariations()">Generate Similar</button>
-      </div>
-    </div>
-
-    <div class="thumb-grid" id="thumbGrid"></div>
+<!-- STEP 2: SOURCE IMAGE GALLERY -->
+<div class="card hidden" id="sourceGalleryCard">
+  <div class="section-header">
+    <h2><span class="step-num">2</span> Source Images</h2>
+    <span id="gatherStatus" style="color:#a0a0b0;font-size:13px;"></span>
   </div>
+  <p style="color:#a0a0b0;font-size:13px;margin-bottom:12px;">Click X to remove images you don't want. These will be used as visual reference in thumbnail generation.</p>
+  <div class="source-gallery" id="sourceGallery"></div>
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="proceedToIdeas()">Continue to Generate Ideas</button>
+    <button class="btn btn-secondary" onclick="document.getElementById('addMoreSourceInput').click()">Upload More</button>
+    <input type="file" id="addMoreSourceInput" multiple accept="image/*" style="display:none" onchange="addMoreSourceImages(this)">
+  </div>
+</div>
+
+<!-- STEP 3: IDEAS -->
+<div class="card hidden" id="ideasCard">
+  <div class="section-header">
+    <h2><span class="step-num">3</span> Thumbnail Ideas</h2>
+    <span id="ideasStatus" style="color:#a0a0b0;font-size:13px;"></span>
+  </div>
+  <div id="ideasList"></div>
+  <div class="btn-row">
+    <button class="btn btn-primary" id="genThumbsBtn" onclick="generateThumbnails()">Generate Thumbnails (3 per idea)</button>
+    <button class="btn btn-secondary" onclick="generateMoreIdeas()">Generate More Ideas</button>
+  </div>
+</div>
+
+<!-- STEP 4: PROGRESS -->
+<div class="card hidden" id="progressCard">
+  <div class="section-header">
+    <h2 id="phaseLabel">Generating...</h2>
+    <span id="progressText" style="color:#a0a0b0;">0 / 0</span>
+  </div>
+  <div class="progress-bar">
+    <div class="progress-fill" id="progressFill" style="width:0%"></div>
+  </div>
+  <div class="log" id="logArea"></div>
+</div>
+
+<!-- STEP 5: THUMBNAILS GRID -->
+<div class="card hidden" id="gridCard">
+  <div class="section-header">
+    <h2 id="gridLabel">Select Your Favorites</h2>
+    <div class="actions-bar">
+      <span class="selected-count"><span id="selectedCount">0</span> selected</span>
+      <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveFinals()" disabled>Save Finals</button>
+      <button class="btn btn-secondary btn-sm" onclick="openFolder()">Open Folder</button>
+    </div>
+  </div>
+
+  <div class="revision-panel" id="revisionPanel">
+    <label class="section">Revise Selected</label>
+    <textarea id="revisionPrompt" rows="2" placeholder="e.g. Make the background darker, add more fire, change text to EXTINCTION..."></textarea>
+    <div class="revision-actions">
+      <button class="btn btn-primary btn-sm" onclick="startRevision()">Revise with Prompt</button>
+      <button class="btn btn-secondary btn-sm" onclick="startVariations()">Generate Similar</button>
+    </div>
+  </div>
+
+  <div id="ideaGroupsContainer"></div>
+
+  <div class="btn-row" style="margin-top:16px;">
+    <button class="btn btn-secondary" onclick="generateMoreIdeas()">Generate More Ideas</button>
+  </div>
+</div>
+
+<!-- ADDITIONAL INSTRUCTIONS (always visible after step 1) -->
+<div class="card hidden" id="additionalCard">
+  <label class="section">Additional Instructions <span class="tag">Optional — affects all future generations</span></label>
+  <textarea id="additionalInstructions" rows="2" placeholder="e.g. Make Liron look more concerned. Use mushroom clouds. Always include a doomsday clock."></textarea>
+</div>
+
+<!-- COST DISPLAY -->
+<div class="cost-display" id="costDisplay" style="display:none;">
+  Est. cost: <strong id="costAmount">$0.00</strong>
 </div>
 
 <script>
+// ----- State -----
+let ideas = [];
+let sourceImages = [];  // {url, thumbnail, title, selected, bytes_uploaded}
 let selected = new Set();
 let allImages = [];
 let pollInterval = null;
+let transcript = '';
 
-// File upload previews
+// ----- File upload helpers -----
 function setupFileUpload(uploadId, inputId, previewId) {
   const zone = document.getElementById(uploadId);
   const input = document.getElementById(inputId);
   const previews = document.getElementById(previewId);
+  if (!zone || !input) return;
 
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
@@ -845,16 +969,14 @@ function setupFileUpload(uploadId, inputId, previewId) {
     e.preventDefault();
     zone.classList.remove('dragover');
     if (e.dataTransfer.files.length > 0) {
-      // Merge with existing files
       const dt = new DataTransfer();
       for (const f of input.files) dt.items.add(f);
       for (const f of e.dataTransfer.files) dt.items.add(f);
       input.files = dt.files;
-      showPreviews(input, previews);
+      if (previews) showPreviews(input, previews);
     }
   });
-
-  input.addEventListener('change', () => showPreviews(input, previews));
+  if (previews) input.addEventListener('change', () => showPreviews(input, previews));
 }
 
 function showPreviews(input, container) {
@@ -868,19 +990,17 @@ function showPreviews(input, container) {
 }
 
 setupFileUpload('speakerUpload', 'speakerFiles', 'speakerPreviews');
-setupFileUpload('inspoUpload', 'inspoFiles', 'inspoPreviews');
+setupFileUpload('sourceUpload', 'sourceFiles', 'sourcePreviews');
 
-// Transcript file upload with drag-and-drop
+// Transcript
 (function() {
   const zone = document.getElementById('transcriptUpload');
   const input = document.getElementById('transcriptFile');
   const nameEl = document.getElementById('transcriptFileName');
-
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
   zone.addEventListener('drop', e => {
-    e.preventDefault();
-    zone.classList.remove('dragover');
+    e.preventDefault(); zone.classList.remove('dragover');
     if (e.dataTransfer.files.length > 0) {
       input.files = e.dataTransfer.files;
       nameEl.textContent = input.files[0].name;
@@ -891,49 +1011,253 @@ setupFileUpload('inspoUpload', 'inspoFiles', 'inspoPreviews');
   });
 })();
 
-async function startGeneration() {
+// ----- Step 2: Gather Source Images -----
+async function gatherSourceImages() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+
+  const btn = document.getElementById('gatherBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Searching...';
+
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('custom_prompt', document.getElementById('customPrompt').value);
+
+    const resp = await fetch('/gather_images', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    sourceImages = (data.images || []).map((img, i) => ({...img, id: i, removed: false}));
+    renderSourceGallery();
+    document.getElementById('sourceGalleryCard').classList.remove('hidden');
+    document.getElementById('additionalCard').classList.remove('hidden');
+    document.getElementById('gatherStatus').textContent = `Found ${sourceImages.length} images`;
+  } catch(e) {
+    alert('Error: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Gather Source Images from Web';
+  }
+}
+
+function renderSourceGallery() {
+  const gallery = document.getElementById('sourceGallery');
+  gallery.innerHTML = '';
+  sourceImages.forEach((img, i) => {
+    if (img.removed) return;
+    const div = document.createElement('div');
+    div.className = 'source-item';
+    div.innerHTML =
+      '<img src="' + escHtml(img.thumbnail || img.url) + '" onerror="this.parentElement.style.display=\'none\'">' +
+      '<div class="source-title">' + escHtml(img.title || img.query || '') + '</div>' +
+      '<button class="remove-btn" onclick="removeSourceImage(' + i + ')">&times;</button>';
+    gallery.appendChild(div);
+  });
+}
+
+function removeSourceImage(idx) {
+  sourceImages[idx].removed = true;
+  renderSourceGallery();
+}
+
+function addMoreSourceImages(input) {
+  for (const file of input.files) {
+    const url = URL.createObjectURL(file);
+    sourceImages.push({url: url, thumbnail: url, title: file.name, removed: false, localFile: file});
+  }
+  renderSourceGallery();
+}
+
+function skipToIdeas() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+  document.getElementById('additionalCard').classList.remove('hidden');
+  proceedToIdeas();
+}
+
+// ----- Step 3: Generate Ideas -----
+async function proceedToIdeas() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+
+  const card = document.getElementById('ideasCard');
+  card.classList.remove('hidden');
+  document.getElementById('ideasStatus').innerHTML = '<span class="spinner"></span> Generating ideas...';
+
+  // Read transcript if provided
   const fileInput = document.getElementById('transcriptFile');
-  if (!fileInput.files.length) {
-    alert('Please upload a transcript file.');
-    return;
+  if (fileInput.files.length > 0) {
+    transcript = await fileInput.files[0].text();
   }
 
-  const transcript = await fileInput.files[0].text();
-  if (!transcript.trim()) {
-    alert('Transcript file is empty.');
-    return;
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('custom_prompt', document.getElementById('customPrompt').value);
+    fd.append('transcript', transcript);
+    fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+
+    const resp = await fetch('/generate_ideas', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); document.getElementById('ideasStatus').textContent = 'Error'; return; }
+
+    ideas = data.ideas || [];
+    renderIdeas();
+    document.getElementById('ideasStatus').textContent = ideas.length + ' ideas generated';
+  } catch(e) {
+    alert('Error: ' + e);
+    document.getElementById('ideasStatus').textContent = 'Error';
   }
+}
+
+async function generateMoreIdeas() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+
+  document.getElementById('ideasCard').classList.remove('hidden');
+  document.getElementById('ideasStatus').innerHTML = '<span class="spinner"></span> Generating more ideas...';
+
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('custom_prompt', document.getElementById('customPrompt').value);
+    fd.append('transcript', transcript);
+    fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+    fd.append('existing_ideas', JSON.stringify(ideas));
+
+    const resp = await fetch('/more_ideas', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    const newIdeas = data.ideas || [];
+    ideas = ideas.concat(newIdeas);
+    renderIdeas();
+    document.getElementById('ideasStatus').textContent = ideas.length + ' ideas total';
+  } catch(e) {
+    alert('Error: ' + e);
+  }
+}
+
+function renderIdeas() {
+  const list = document.getElementById('ideasList');
+  list.innerHTML = '';
+  ideas.forEach((idea, i) => {
+    const div = document.createElement('div');
+    div.className = 'idea-item';
+    div.id = 'idea-' + i;
+    div.innerHTML =
+      '<span class="idea-num">' + (i+1) + '</span>' +
+      '<div class="idea-text" id="idea-text-' + i + '">' + escHtml(idea) + '</div>' +
+      '<div class="idea-actions">' +
+        '<button onclick="editIdea(' + i + ')" title="Edit">&#9998;</button>' +
+        '<button onclick="deleteIdea(' + i + ')" title="Delete">&times;</button>' +
+      '</div>';
+    list.appendChild(div);
+  });
+}
+
+function editIdea(idx) {
+  const el = document.getElementById('idea-text-' + idx);
+  const current = ideas[idx];
+  el.innerHTML = '<textarea onblur="saveIdea(' + idx + ', this.value)" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();this.blur();}">' + escHtml(current) + '</textarea>';
+  el.querySelector('textarea').focus();
+}
+
+function saveIdea(idx, value) {
+  ideas[idx] = value.trim() || ideas[idx];
+  renderIdeas();
+}
+
+function deleteIdea(idx) {
+  ideas.splice(idx, 1);
+  renderIdeas();
+}
+
+// ----- Step 4: Generate Thumbnails -----
+async function generateThumbnails() {
+  if (ideas.length === 0) { alert('No ideas to generate thumbnails for.'); return; }
+
+  const btn = document.getElementById('genThumbsBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Starting...';
 
   const fd = new FormData();
+  fd.append('title', document.getElementById('episodeTitle').value);
+  fd.append('ideas', JSON.stringify(ideas));
+  fd.append('custom_prompt', document.getElementById('customPrompt').value);
+  fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
   fd.append('transcript', transcript);
-  fd.append('visual_concept', document.getElementById('visualConcept').value);
-  fd.append('count', document.getElementById('countInput').value);
+
+  // Attach speaker images
+  for (const f of document.getElementById('speakerFiles').files) {
+    fd.append('speakers', f);
+  }
+
+  // Attach locally uploaded source images
+  for (const f of document.getElementById('sourceFiles').files) {
+    fd.append('sources', f);
+  }
+
+  // Attach web-gathered source images (send URLs for server to download)
+  const selectedSources = sourceImages.filter(s => !s.removed).map(s => s.url).filter(Boolean);
+  fd.append('source_urls', JSON.stringify(selectedSources));
+
+  try {
+    const resp = await fetch('/generate_from_ideas', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = 'Generate Thumbnails (3 per idea)'; return; }
+
+    selected.clear();
+    allImages = [];
+    document.getElementById('ideaGroupsContainer').innerHTML = '';
+    updateSelectedUI();
+
+    document.getElementById('progressCard').classList.remove('hidden');
+    document.getElementById('gridCard').classList.remove('hidden');
+    document.getElementById('costDisplay').style.display = 'block';
+    startPolling();
+  } catch(e) {
+    alert('Error: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Generate Thumbnails (3 per idea)';
+  }
+}
+
+async function riffIdea(ideaIdx) {
+  const idea = ideas[ideaIdx];
+  if (!idea) return;
+
+  const fd = new FormData();
+  fd.append('idea_text', idea);
+  fd.append('idea_idx', ideaIdx);
+  fd.append('custom_prompt', document.getElementById('customPrompt').value);
+  fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
 
   for (const f of document.getElementById('speakerFiles').files) {
     fd.append('speakers', f);
   }
-  for (const f of document.getElementById('inspoFiles').files) {
-    fd.append('inspiration', f);
+  for (const f of document.getElementById('sourceFiles').files) {
+    fd.append('sources', f);
   }
+  const selectedSources = sourceImages.filter(s => !s.removed).map(s => s.url).filter(Boolean);
+  fd.append('source_urls', JSON.stringify(selectedSources));
 
-  document.getElementById('generateBtn').disabled = true;
+  try {
+    const resp = await fetch('/riff_idea', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
 
-  fetch('/generate', { method: 'POST', body: fd })
-    .then(r => r.json())
-    .then(data => {
-      if (data.error) { alert(data.error); document.getElementById('generateBtn').disabled = false; return; }
-      document.getElementById('inputSection').classList.remove('active');
-      document.getElementById('progressSection').classList.add('active');
-      document.getElementById('gridSection').classList.add('active');
-      selected.clear();
-      allImages = [];
-      document.getElementById('thumbGrid').innerHTML = '';
-      updateSelectedUI();
-      startPolling();
-    })
-    .catch(e => { alert('Error: ' + e); document.getElementById('generateBtn').disabled = false; });
+    document.getElementById('progressCard').classList.remove('hidden');
+    startPolling();
+  } catch(e) {
+    alert('Error: ' + e);
+  }
 }
 
+// ----- Polling -----
 function startPolling() {
   if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(pollStatus, 500);
@@ -944,15 +1268,27 @@ function pollStatus() {
     const doneCount = data.completed + data.errors;
     const pct = data.total > 0 ? (doneCount / data.total * 100) : 0;
     document.getElementById('progressFill').style.width = pct + '%';
-    document.getElementById('progressText').textContent = data.completed + ' / ' + data.total + (data.errors > 0 ? ' (' + data.errors + ' failed)' : '');
+    document.getElementById('progressText').textContent =
+      data.completed + ' / ' + data.total + (data.errors > 0 ? ' (' + data.errors + ' failed)' : '');
 
-    const phaseNames = { round1: 'Generating Round 1...', revision: 'Revising...', variation: 'Generating Variations...' };
+    const phaseNames = {
+      round1: 'Generating Thumbnails...',
+      riff: 'Riffing on Idea...',
+      revision: 'Revising...',
+      variation: 'Generating Variations...'
+    };
     document.getElementById('phaseLabel').textContent = phaseNames[data.phase] || 'Generating...';
 
     const logArea = document.getElementById('logArea');
     logArea.innerHTML = data.log.slice(-30).map(l => '<div>' + escHtml(l) + '</div>').join('');
     logArea.scrollTop = logArea.scrollHeight;
 
+    // Update cost
+    if (data.cost !== undefined) {
+      document.getElementById('costAmount').textContent = '$' + data.cost.toFixed(2);
+    }
+
+    // Add new images to grid
     while (allImages.length < data.images.length) {
       const img = data.images[allImages.length];
       allImages.push(img);
@@ -967,7 +1303,27 @@ function pollStatus() {
 }
 
 function addImageToGrid(img) {
-  const grid = document.getElementById('thumbGrid');
+  const ideaIdx = img.idea_idx;
+  const container = document.getElementById('ideaGroupsContainer');
+
+  // Find or create idea group
+  let group = document.getElementById('idea-group-' + ideaIdx);
+  if (!group) {
+    group = document.createElement('div');
+    group.className = 'idea-group';
+    group.id = 'idea-group-' + ideaIdx;
+
+    const ideaText = (ideaIdx >= 0 && ideaIdx < ideas.length) ? ideas[ideaIdx] : 'Variation';
+    group.innerHTML =
+      '<div class="idea-group-header">' +
+        '<div class="idea-label">' + (ideaIdx >= 0 ? '<strong>Idea ' + (ideaIdx+1) + ':</strong> ' : '') + escHtml(ideaText) + '</div>' +
+        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm" onclick="riffIdea(' + ideaIdx + ')">Riff 20 More</button>' : '') +
+      '</div>' +
+      '<div class="thumb-grid" id="idea-grid-' + ideaIdx + '"></div>';
+    container.appendChild(group);
+  }
+
+  const grid = document.getElementById('idea-grid-' + ideaIdx);
   const card = document.createElement('div');
   card.className = 'thumb-card';
   card.dataset.idx = img.idx;
@@ -978,6 +1334,7 @@ function addImageToGrid(img) {
   grid.appendChild(card);
 }
 
+// ----- Selection -----
 function toggleSelect(idx) {
   const card = document.querySelector('[data-idx="' + idx + '"]');
   if (!card) return;
@@ -995,18 +1352,14 @@ function updateSelectedUI() {
   document.getElementById('selectedCount').textContent = selected.size;
   document.getElementById('saveBtn').disabled = selected.size === 0;
   const panel = document.getElementById('revisionPanel');
-  if (selected.size > 0) {
-    panel.classList.add('visible');
-  } else {
-    panel.classList.remove('visible');
-  }
+  if (selected.size > 0) panel.classList.add('visible');
+  else panel.classList.remove('visible');
 }
 
 function startRevision() {
   const prompt = document.getElementById('revisionPrompt').value.trim();
   if (!prompt) { alert('Enter revision instructions.'); return; }
   const indices = Array.from(selected).join(',');
-
   fetch('/revise', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1014,8 +1367,8 @@ function startRevision() {
   }).then(r => r.json()).then(data => {
     if (data.error) { alert(data.error); return; }
     document.getElementById('gridLabel').textContent = 'Revisions — Select Your Finals';
-    selected.clear();
-    updateSelectedUI();
+    selected.clear(); updateSelectedUI();
+    document.getElementById('progressCard').classList.remove('hidden');
     startPolling();
   });
 }
@@ -1025,8 +1378,8 @@ function startVariations() {
   fetch('/vary?indices=' + indices).then(r => r.json()).then(data => {
     if (data.error) { alert(data.error); return; }
     document.getElementById('gridLabel').textContent = 'Variations — Select Your Finals';
-    selected.clear();
-    updateSelectedUI();
+    selected.clear(); updateSelectedUI();
+    document.getElementById('progressCard').classList.remove('hidden');
     startPolling();
   });
 }
@@ -1035,14 +1388,15 @@ function saveFinals() {
   const indices = Array.from(selected).join(',');
   fetch('/save_finals?indices=' + indices).then(r => r.json()).then(data => {
     if (data.error) { alert(data.error); return; }
-    alert('Saved ' + data.count + ' finals to:\\n' + data.finals_dir);
+    alert('Saved ' + data.count + ' finals to:\n' + data.finals_dir);
   });
 }
 
 function openFolder() { fetch('/open_folder'); }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
 </body>
@@ -1085,7 +1439,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/":
             self._serve_html()
         elif path == "/status":
-            safe = {k: v for k, v in status.items() if k != "speakers"}
+            safe = {k: v for k, v in status.items() if k not in ("speakers", "sources")}
             self._json_response(safe)
         elif path == "/image":
             self._serve_image(params.get("path", ""))
@@ -1109,8 +1463,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
 
-        if path == "/generate":
-            self._handle_generate_post(body)
+        if path == "/gather_images":
+            self._handle_gather_images(body)
+        elif path == "/generate_ideas":
+            self._handle_generate_ideas(body)
+        elif path == "/generate_from_ideas":
+            self._handle_generate_from_ideas(body)
+        elif path == "/riff_idea":
+            self._handle_riff_idea(body)
+        elif path == "/more_ideas":
+            self._handle_more_ideas(body)
         elif path == "/revise":
             self._handle_revise_post(body)
         else:
@@ -1148,68 +1510,237 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with open(filepath, "rb") as f:
             self.wfile.write(f.read())
 
-    def _handle_generate_post(self, body):
+    # ----- New Endpoints -----
+
+    def _handle_gather_images(self, body):
+        """Generate search queries via Gemini, then search Brave for images."""
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, _ = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+
+        title = fields.get("title", "").strip()
+        custom_prompt = fields.get("custom_prompt", "").strip()
+
+        if not title:
+            self._json_response({"error": "Episode title is required"})
+            return
+
+        if not BRAVE_API_KEY:
+            self._json_response({"error": "BRAVE_API_KEY not configured. Upload source images manually."})
+            return
+
+        try:
+            client = get_client()
+            queries = generate_search_queries(client, title, custom_prompt)
+            images = search_images_brave(queries)
+            self._json_response({"ok": True, "queries": queries, "images": images})
+        except Exception as e:
+            self._json_response({"error": f"Search failed: {str(e)[:200]}"})
+
+    def _handle_generate_ideas(self, body):
+        """Generate 10 thumbnail ideas via Gemini text model."""
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, _ = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+
+        title = fields.get("title", "").strip()
+        custom_prompt = fields.get("custom_prompt", "").strip()
+        transcript_text = fields.get("transcript", "").strip()
+        additional = fields.get("additional_instructions", "").strip()
+
+        if not title:
+            self._json_response({"error": "Episode title is required"})
+            return
+
+        try:
+            client = get_client()
+            ideas_list = generate_ideas(client, title, custom_prompt, transcript_text, additional)
+            status["ideas"] = ideas_list
+            self._json_response({"ok": True, "ideas": ideas_list})
+        except Exception as e:
+            self._json_response({"error": f"Idea generation failed: {str(e)[:200]}"})
+
+    def _handle_generate_from_ideas(self, body):
+        """Generate 3 thumbnails per idea."""
         global status
         if status["running"]:
             self._json_response({"error": "Generation already in progress"})
             return
 
         content_type = self.headers.get("Content-Type", "")
-
         if "multipart/form-data" in content_type:
             fields, files = parse_multipart(self.headers, body)
         else:
-            # URL-encoded fallback
             fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
             files = {}
 
-        transcript = fields.get("transcript", "").strip()
-        visual_concept = fields.get("visual_concept", "").strip()
+        title = fields.get("title", "").strip()
+        ideas_json = fields.get("ideas", "[]")
+        custom_prompt = fields.get("custom_prompt", "").strip()
+        additional = fields.get("additional_instructions", "").strip()
 
-        if not transcript:
-            self._json_response({"error": "Episode transcript is required"})
+        try:
+            ideas_list = json.loads(ideas_json)
+        except json.JSONDecodeError:
+            self._json_response({"error": "Invalid ideas JSON"})
             return
 
-        # Upload speaker/inspiration files to Gemini File API
+        if not ideas_list:
+            self._json_response({"error": "No ideas provided"})
+            return
+
+        # Upload speaker and source images to Gemini File API
         client = get_client()
         speaker_refs = upload_files_from_bytes(client, files.get("speakers", []), "speaker")
-        inspo_refs = upload_files_from_bytes(client, files.get("inspiration", []), "inspiration")
+        source_refs = upload_files_from_bytes(client, files.get("sources", []), "source")
+
+        # Download and upload web-gathered source images
+        source_urls_json = fields.get("source_urls", "[]")
+        try:
+            source_urls = json.loads(source_urls_json)
+        except json.JSONDecodeError:
+            source_urls = []
+
+        for url in source_urls[:15]:  # Cap at 15 web images
+            img_bytes = download_image_bytes(url)
+            if img_bytes:
+                refs = upload_files_from_bytes(client, [img_bytes], "web_source")
+                source_refs.extend(refs)
 
         # Build output dir
-        slug = re.sub(r"[^a-z0-9]+", "-", transcript[:40].lower()).strip("-") or "episode"
+        slug = re.sub(r"[^a-z0-9]+", "-", title[:40].lower()).strip("-") or "episode"
         date = datetime.date.today().isoformat()
         episode_dir = os.path.join(THUMBNAILS_DIR, f"{slug}-{date}")
         round_dir = os.path.join(episode_dir, "round1")
         os.makedirs(round_dir, exist_ok=True)
 
-        # Save input info
+        # Save metadata
         info_dict = {
-            "transcript_length": len(transcript),
-            "visual_concept": visual_concept,
+            "title": title,
+            "custom_prompt": custom_prompt,
+            "num_ideas": len(ideas_list),
             "num_speaker_photos": len(speaker_refs),
-            "num_inspiration_images": len(inspo_refs),
+            "num_source_images": len(source_refs),
         }
         with open(os.path.join(episode_dir, "episode.json"), "w") as f:
             json.dump(info_dict, f, indent=2)
 
-        # Parse count
-        try:
-            count = int(fields.get("count", "20"))
-        except ValueError:
-            count = 20
-        count = max(5, min(100, count))
-
         # Build prompts
-        prompts = build_all_prompts(transcript, visual_concept, speaker_refs, inspo_refs, count)
+        prompts = build_idea_prompts(ideas_list, speaker_refs, source_refs, custom_prompt, additional, variations_per=3)
         save_metadata(round_dir, info_dict, len(prompts), "round1")
 
-        # Start generation
+        # Store state
         status["episode_dir"] = episode_dir
         status["speakers"] = speaker_refs
+        status["sources"] = source_refs
+        status["ideas"] = ideas_list
         status["round_num"] = 1
         run_generation(client, prompts, round_dir, "round1")
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
+
+    def _handle_riff_idea(self, body):
+        """Generate 20 more thumbnails for a single idea."""
+        global status
+        if status["running"]:
+            self._json_response({"error": "Generation already in progress"})
+            return
+
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, files = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+            files = {}
+
+        idea_text = fields.get("idea_text", "").strip()
+        idea_idx = int(fields.get("idea_idx", "-1"))
+        custom_prompt = fields.get("custom_prompt", "").strip()
+        additional = fields.get("additional_instructions", "").strip()
+
+        if not idea_text:
+            self._json_response({"error": "No idea text provided"})
+            return
+
+        client = get_client()
+
+        # Re-upload speakers/sources if provided, otherwise reuse stored refs
+        speaker_refs = upload_files_from_bytes(client, files.get("speakers", []), "speaker")
+        if not speaker_refs:
+            speaker_refs = status.get("speakers", [])
+
+        source_refs = upload_files_from_bytes(client, files.get("sources", []), "source")
+
+        # Download web sources
+        source_urls_json = fields.get("source_urls", "[]")
+        try:
+            source_urls = json.loads(source_urls_json)
+        except json.JSONDecodeError:
+            source_urls = []
+        for url in source_urls[:15]:
+            img_bytes = download_image_bytes(url)
+            if img_bytes:
+                refs = upload_files_from_bytes(client, [img_bytes], "web_source")
+                source_refs.extend(refs)
+
+        if not source_refs:
+            source_refs = status.get("sources", [])
+
+        episode_dir = status.get("episode_dir", "")
+        if not episode_dir:
+            episode_dir = os.path.join(THUMBNAILS_DIR, f"riff-{datetime.date.today().isoformat()}")
+
+        status["round_num"] = status.get("round_num", 1) + 1
+        round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
+        os.makedirs(round_dir, exist_ok=True)
+
+        # Build riff prompts — reuse idea_idx so images group correctly
+        prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=20)
+        # Remap idea_idx from 0 back to the original idea_idx
+        prompts = [(idea_idx, var, contents) for (_, var, contents) in prompts_raw]
+
+        run_generation(client, prompts, round_dir, "riff")
+        self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
+
+    def _handle_more_ideas(self, body):
+        """Generate more ideas, avoiding duplicates."""
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, _ = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+
+        title = fields.get("title", "").strip()
+        custom_prompt = fields.get("custom_prompt", "").strip()
+        transcript_text = fields.get("transcript", "").strip()
+        additional = fields.get("additional_instructions", "").strip()
+        existing_json = fields.get("existing_ideas", "[]")
+
+        if not title:
+            self._json_response({"error": "Episode title is required"})
+            return
+
+        try:
+            existing = json.loads(existing_json)
+        except json.JSONDecodeError:
+            existing = []
+
+        # Add existing ideas to the prompt so it avoids duplicates
+        extra_instruction = ""
+        if existing:
+            extra_instruction = "\n\nAVOID duplicating these existing ideas:\n" + "\n".join(f"- {e}" for e in existing)
+
+        try:
+            client = get_client()
+            combined_additional = (additional + extra_instruction) if additional else extra_instruction
+            new_ideas = generate_ideas(client, title, custom_prompt, transcript_text, combined_additional)
+            self._json_response({"ok": True, "ideas": new_ideas})
+        except Exception as e:
+            self._json_response({"error": f"Idea generation failed: {str(e)[:200]}"})
 
     def _handle_revise_post(self, body):
         global status
@@ -1244,8 +1775,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
         os.makedirs(round_dir, exist_ok=True)
 
-        count_per = 3
-        prompts = build_revision_prompts(selected_images, speakers, custom_prompt, count_per)
+        prompts = build_revision_prompts(selected_images, speakers, custom_prompt, count_per=3)
 
         client = get_client()
         run_generation(client, prompts, round_dir, "revision")
@@ -1279,8 +1809,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
         os.makedirs(round_dir, exist_ok=True)
 
-        count_per = 3
-        prompts = build_variation_prompts(selected_images, speakers, count_per)
+        prompts = build_variation_prompts(selected_images, speakers, count_per=3)
 
         client = get_client()
         run_generation(client, prompts, round_dir, "variation")
@@ -1329,10 +1858,12 @@ def main():
 
     client = get_client()
     upload_brand_references(client)
-    print(f"Nano Banana 2 Thumbnail Generator")
-    print(f"Model: {GEMINI_MODEL}")
+    print(f"Doom Debates Thumbnail Generator v2")
+    print(f"Image Model: {GEMINI_MODEL}")
+    print(f"Text Model: {TEXT_MODEL}")
     print(f"Output: {THUMBNAILS_DIR}")
-    print(f"Examples: {EXAMPLES_DIR}")
+    print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
+    print(f"Brave Search: {'enabled' if BRAVE_API_KEY else 'disabled (no BRAVE_API_KEY)'}")
     print(f"Server: http://0.0.0.0:{PORT}")
     if APP_PASS:
         print(f"Auth: enabled (user={APP_USER})")

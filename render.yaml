@@ -9,5 +9,7 @@ services:
         sync: false
       - key: APP_PASSWORD
         sync: false
+      - key: BRAVE_API_KEY
+        sync: false
       - key: NO_BROWSER
         value: "1"
