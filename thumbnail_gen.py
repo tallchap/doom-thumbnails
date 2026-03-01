@@ -320,7 +320,19 @@ def generate_ideas(client, title, custom_prompt, transcript, additional_instruct
     text = response.text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(text)
+    return _parse_json_array(text)
+
+
+def _parse_json_array(text):
+    """Parse a JSON array from text, tolerant of extra text around it."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
 
 
 def generate_search_queries(client, title, custom_prompt):
@@ -331,7 +343,7 @@ def generate_search_queries(client, title, custom_prompt):
     text = response.text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return json.loads(text)
+    return _parse_json_array(text)
 
 
 # ----- Prompt Building -----
@@ -1179,6 +1191,7 @@ async function proceedToIdeas() {
 }
 
 async function generateMoreIdeas() {
+  flushActiveEdits();
   const title = document.getElementById('episodeTitle').value.trim();
   if (!title) { alert('Please enter an episode title.'); return; }
 
@@ -1227,12 +1240,12 @@ function renderIdeas() {
 function editIdea(idx) {
   const el = document.getElementById('idea-text-' + idx);
   const current = ideas[idx];
-  el.innerHTML = '<textarea onblur="saveIdea(' + idx + ', this.value)" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();this.blur();}">' + escHtml(current) + '</textarea>';
+  el.innerHTML = '<textarea oninput="ideas[' + idx + '] = this.value.trim() || ideas[' + idx + ']" onblur="finishEditIdea(' + idx + ')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();this.blur();}">' + escHtml(current) + '</textarea>';
   el.querySelector('textarea').focus();
 }
 
-function saveIdea(idx, value) {
-  ideas[idx] = value.trim() || ideas[idx];
+function finishEditIdea(idx) {
+  // ideas[idx] is already updated by oninput — just re-render to show static text
   renderIdeas();
 }
 
@@ -1542,18 +1555,31 @@ function saveFinals() {
 function openFolder() { fetch('/open_folder'); }
 
 function downloadImage(encodedPath, filename) {
-  const a = document.createElement('a');
-  a.href = '/download?path=' + encodedPath;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  fetch('/download?path=' + encodedPath)
+    .then(r => {
+      if (!r.ok) throw new Error('Download failed: ' + r.status);
+      return r.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    })
+    .catch(e => alert('Download error: ' + e.message));
 }
 
 function downloadSelected() {
   if (selected.size === 0) return;
-  allImages.filter(img => selected.has(img.idx)).forEach(img => {
-    downloadImage(encodeURIComponent(img.path), 'thumb_' + img.idx + '.png');
+  const imgs = allImages.filter(img => selected.has(img.idx));
+  let delay = 0;
+  imgs.forEach(img => {
+    setTimeout(() => downloadImage(encodeURIComponent(img.path), 'thumb_' + img.idx + '.png'), delay);
+    delay += 300;
   });
 }
 
@@ -1924,10 +1950,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             existing = []
 
-        # Add existing ideas to the prompt so it avoids duplicates
+        # Add existing ideas to the prompt so it avoids duplicates (truncate to avoid prompt bloat)
         extra_instruction = ""
         if existing:
-            extra_instruction = "\n\nAVOID duplicating these existing ideas:\n" + "\n".join(f"- {e}" for e in existing)
+            # Only include first 80 chars of each idea, max 20 ideas
+            summaries = [e[:80] for e in existing[:20]]
+            extra_instruction = "\n\nAVOID duplicating these existing ideas:\n" + "\n".join(f"- {s}" for s in summaries)
 
         try:
             client = get_client()
