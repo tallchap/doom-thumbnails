@@ -2082,9 +2082,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Generate 3 thumbnails per idea."""
         global status
         with status_lock:
-            if status["running"]:
-                self._json_response({"error": "Generation already in progress"})
-                return
+            is_running = status["running"]
+        if is_running:
+            self._json_response({"error": "Generation already in progress"})
+            return
 
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" in content_type:
@@ -2162,9 +2163,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Generate more thumbnails for a single idea."""
         global status
         with status_lock:
-            if status["running"]:
-                self._json_response({"error": "Generation already in progress"})
-                return
+            is_running = status["running"]
+        if is_running:
+            self._json_response({"error": "Generation already in progress"})
+            return
 
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" in content_type:
@@ -2279,9 +2281,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _handle_revise_post(self, body):
         global status
         with status_lock:
-            if status["running"]:
-                self._json_response({"error": "Generation already in progress"})
-                return
+            is_running = status["running"]
+        if is_running:
+            self._json_response({"error": "Generation already in progress"})
+            return
 
         params = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
         indices_raw = params.get("indices", "")
@@ -2309,8 +2312,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         speakers = status.get("speakers", [])
         episode_dir = status.get("episode_dir", "")
-        status["round_num"] = status.get("round_num", 1) + 1
-        round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
+        with status_lock:
+            status["round_num"] = status.get("round_num", 1) + 1
+            round_num = status["round_num"]
+        round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
         prompts = build_revision_prompts(selected_images, speakers, custom_prompt, count_per=3)
@@ -2323,9 +2328,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _handle_vary(self, params):
         global status
         with status_lock:
-            if status["running"]:
-                self._json_response({"error": "Generation already in progress"})
-                return
+            is_running = status["running"]
+        if is_running:
+            self._json_response({"error": "Generation already in progress"})
+            return
 
         indices_raw = params.get("indices", "")
         indices = [int(x) for x in indices_raw.split(",") if x.strip().isdigit()]
@@ -2347,8 +2353,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         speakers = status.get("speakers", [])
         episode_dir = status.get("episode_dir", "")
-        status["round_num"] = status.get("round_num", 1) + 1
-        round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
+        with status_lock:
+            status["round_num"] = status.get("round_num", 1) + 1
+            round_num = status["round_num"]
+        round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
         prompts = build_variation_prompts(selected_images, speakers, count_per=3)
