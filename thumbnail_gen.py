@@ -27,6 +27,14 @@ import threading
 import urllib.parse
 import webbrowser
 
+# Lock for thread-safe access to the shared `status` dict.
+# The background generation thread mutates status["images"],
+# status["idea_groups"], status["log"], etc. while the HTTP
+# handler reads them for JSON serialization.  Without the lock,
+# dict iteration during json.dumps can raise RuntimeError when
+# a new key is added to idea_groups concurrently.
+status_lock = threading.Lock()
+
 import requests
 from dotenv import load_dotenv
 
@@ -504,21 +512,25 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
     global status
     os.makedirs(output_dir, exist_ok=True)
     sem = asyncio.Semaphore(MAX_CONCURRENT)
-    start_idx = len(status["images"])
+    with status_lock:
+        start_idx = len(status["images"])
 
     async def generate_one(idx, idea_idx, contents):
         async with sem:
             for attempt in range(3):
                 try:
-                    response = await client.aio.models.generate_content(
-                        model=GEMINI_MODEL,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            response_modalities=["IMAGE"],
-                            image_config=types.ImageConfig(
-                                aspect_ratio="16:9",
+                    response = await asyncio.wait_for(
+                        client.aio.models.generate_content(
+                            model=GEMINI_MODEL,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["IMAGE"],
+                                image_config=types.ImageConfig(
+                                    aspect_ratio="16:9",
+                                ),
                             ),
                         ),
+                        timeout=120,
                     )
                     if (response.candidates
                             and response.candidates[0].content
@@ -531,41 +543,51 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                                 img = Image.open(io.BytesIO(img_data))
                                 img.save(filepath, "PNG")
 
-                                status["completed"] += 1
-                                status["cost"] += COST_PER_IMAGE
-                                status["session_cost"] += COST_PER_IMAGE
-                                img_entry = {
-                                    "idx": idx,
-                                    "path": filepath,
-                                    "filename": filename,
-                                    "status": "ok",
-                                    "idea_idx": idea_idx,
-                                }
-                                status["images"].append(img_entry)
+                                with status_lock:
+                                    status["completed"] += 1
+                                    status["cost"] += COST_PER_IMAGE
+                                    status["session_cost"] += COST_PER_IMAGE
+                                    img_entry = {
+                                        "idx": idx,
+                                        "path": filepath,
+                                        "filename": filename,
+                                        "status": "ok",
+                                        "idea_idx": idea_idx,
+                                    }
+                                    status["images"].append(img_entry)
 
-                                if idea_idx >= 0:
-                                    status["idea_groups"].setdefault(idea_idx, []).append(img_entry)
+                                    if idea_idx >= 0:
+                                        status["idea_groups"].setdefault(idea_idx, []).append(img_entry)
 
-                                status["log"].append(
-                                    f"[{status['completed']}/{status['total']}] thumb_{idx:03d}.png OK"
-                                )
+                                    status["log"].append(
+                                        f"[{status['completed']}/{status['total']}] thumb_{idx:03d}.png OK"
+                                    )
                                 return filepath
 
-                    status["errors"] += 1
-                    status["log"].append(f"thumb_{idx:03d}: no image in response")
+                    with status_lock:
+                        status["errors"] += 1
+                        status["log"].append(f"thumb_{idx:03d}: no image in response")
+                    return None
+
+                except asyncio.TimeoutError:
+                    with status_lock:
+                        status["errors"] += 1
+                        status["log"].append(f"thumb_{idx:03d}: timed out after 120s")
                     return None
 
                 except Exception as e:
                     err = str(e)
                     if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < 2:
                         wait = (2 ** attempt) + random.random()
-                        status["log"].append(
-                            f"thumb_{idx:03d}: rate limited, retrying in {wait:.1f}s..."
-                        )
+                        with status_lock:
+                            status["log"].append(
+                                f"thumb_{idx:03d}: rate limited, retrying in {wait:.1f}s..."
+                            )
                         await asyncio.sleep(wait)
                         continue
-                    status["errors"] += 1
-                    status["log"].append(f"thumb_{idx:03d}: ERROR — {err[:120]}")
+                    with status_lock:
+                        status["errors"] += 1
+                        status["log"].append(f"thumb_{idx:03d}: ERROR — {err[:120]}")
                     return None
 
     tasks = [
@@ -579,19 +601,20 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
 def run_generation(client, prompts, output_dir, phase="round1"):
     """Run async generation in a background thread."""
     global status
-    status["running"] = True
-    status["phase"] = phase
-    status["total"] = len(prompts)
-    status["completed"] = 0
-    status["errors"] = 0
-    status["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
-    if phase == "round1":
-        status["images"] = []
-        status["idea_groups"] = {}
-        status["cost"] = 0.0
-    # session_cost is never reset — it accumulates for the entire session
-    status["done"] = False
-    status["output_dir"] = output_dir
+    with status_lock:
+        status["running"] = True
+        status["phase"] = phase
+        status["total"] = len(prompts)
+        status["completed"] = 0
+        status["errors"] = 0
+        status["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
+        if phase == "round1":
+            status["images"] = []
+            status["idea_groups"] = {}
+            status["cost"] = 0.0
+        # session_cost is never reset — it accumulates for the entire session
+        status["done"] = False
+        status["output_dir"] = output_dir
 
     def _run():
         global status
@@ -601,15 +624,18 @@ def run_generation(client, prompts, output_dir, phase="round1"):
             results = loop.run_until_complete(
                 generate_batch(client, prompts, output_dir, phase)
             )
-            status["log"].append(
-                f"Done! {len(results)} images generated, {status['errors']} errors. "
-                f"Estimated cost: ${status['cost']:.2f}"
-            )
+            with status_lock:
+                status["log"].append(
+                    f"Done! {len(results)} images generated, {status['errors']} errors. "
+                    f"Estimated cost: ${status['cost']:.2f}"
+                )
         except Exception as e:
-            status["log"].append(f"FATAL ERROR: {e}")
+            with status_lock:
+                status["log"].append(f"FATAL ERROR: {e}")
         finally:
-            status["running"] = False
-            status["done"] = True
+            with status_lock:
+                status["running"] = False
+                status["done"] = True
             loop.close()
 
     t = threading.Thread(target=_run, daemon=True)
@@ -1403,7 +1429,9 @@ function flushActiveEdits() {
 }
 
 function setRiffButtonsDisabled(disabled) {
-  document.querySelectorAll('.riff-btn').forEach(btn => {
+  // Disable BOTH the outer "Riff" toggle buttons AND the inner
+  // "Generate Riffs" buttons inside open panels.
+  document.querySelectorAll('.riff-btn, .riff-generate-btn').forEach(btn => {
     btn.disabled = disabled;
     if (disabled) btn.title = 'Wait for current generation to finish';
     else btn.title = '';
@@ -1450,9 +1478,10 @@ async function generateThumbnails() {
     document.getElementById('ideaGroupsContainer').innerHTML = '';
     updateSelectedUI();
 
-    // Reset server cost baseline (server resets cost for round1, but session_cost persists)
-    lastServerCost = 0;
-    fetch('/status').then(r => r.json()).then(d => { lastServerCost = d.session_cost || 0; }).catch(() => {});
+    // Sync cost baseline — take current value so deltas apply correctly
+    fetch('/status').then(r => r.json()).then(d => {
+      if (d.session_cost > lastServerCost) lastServerCost = d.session_cost;
+    }).catch(() => {});
 
     document.getElementById('gridCard').classList.remove('hidden');
     showComputeWindow();
@@ -1495,9 +1524,8 @@ async function executeRiff(ideaIdx) {
   const riffCountInput = document.getElementById('riff-count-' + ideaIdx);
   const riffCount = riffCountInput ? parseInt(riffCountInput.value) || 3 : 3;
 
-  // Disable the Generate Riffs button to prevent double-clicks
-  const riffBtn = document.querySelector('#riff-panel-' + ideaIdx + ' .btn-primary');
-  if (riffBtn) { riffBtn.disabled = true; riffBtn.innerHTML = '<span class="spinner"></span> Starting...'; }
+  // Disable ALL riff buttons immediately to prevent concurrent requests
+  setRiffButtonsDisabled(true);
 
   const fd = new FormData();
   fd.append('idea_text', idea);
@@ -1519,10 +1547,15 @@ async function executeRiff(ideaIdx) {
     const resp = await fetch('/riff_idea', { method: 'POST', body: fd, credentials: 'same-origin' });
     if (!resp.ok) {
       alert('Riff request failed (HTTP ' + resp.status + '). Try again.');
+      setRiffButtonsDisabled(false);
       return;
     }
     const data = await resp.json();
-    if (data.error) { alert(data.error); return; }
+    if (data.error) {
+      alert(data.error);
+      setRiffButtonsDisabled(false);
+      return;
+    }
 
     // Register riff as a new idea so addImageToGrid can find its text
     const riffIdeaIdx = data.riff_idea_idx;
@@ -1533,17 +1566,18 @@ async function executeRiff(ideaIdx) {
     const panel = document.getElementById('riff-panel-' + ideaIdx);
     if (panel) panel.style.display = 'none';
 
-    // Reset the server's last-known cost baseline so deltas apply correctly
-    lastServerCost = 0;
-    fetch('/status').then(r => r.json()).then(d => { lastServerCost = d.session_cost || 0; }).catch(() => {});
+    // Sync cost baseline — take current value so deltas apply correctly
+    fetch('/status').then(r => r.json()).then(d => {
+      if (d.session_cost > lastServerCost) lastServerCost = d.session_cost;
+    }).catch(() => {});
 
     document.getElementById('gridCard').classList.remove('hidden');
     showComputeWindow();
     startPolling();
+    // Buttons will be re-enabled by pollStatus when data.done === true
   } catch(e) {
     alert('Riff error: ' + e);
-  } finally {
-    if (riffBtn) { riffBtn.disabled = false; riffBtn.innerHTML = 'Generate Riffs'; }
+    setRiffButtonsDisabled(false);
   }
 }
 
@@ -1687,7 +1721,7 @@ function addImageToGrid(img) {
         '<div class="btn-row" style="margin-top:8px;align-items:center;">' +
           '<label class="section" style="margin:0;">Count:</label>' +
           '<input type="number" id="riff-count-' + ideaIdx + '" value="3" min="1" max="50" style="width:60px;padding:6px 8px;font-size:13px;">' +
-          '<button class="btn btn-primary btn-sm" onclick="executeRiff(' + ideaIdx + ')">Generate Riffs</button>' +
+          '<button class="btn btn-primary btn-sm riff-generate-btn" onclick="executeRiff(' + ideaIdx + ')">Generate Riffs</button>' +
         '</div>' +
       '</div>' : '') +
       '<div class="thumb-grid" id="idea-grid-' + ideaIdx + '"></div>';
@@ -1838,10 +1872,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
         params = dict(urllib.parse.parse_qsl(parsed.query))
 
+        try:
+            self._route_get(path, params)
+        except Exception as e:
+            print(f"GET {path} error: {e}")
+            try:
+                self._json_response({"error": f"Server error: {str(e)[:300]}"})
+            except Exception:
+                pass
+
+    def _route_get(self, path, params):
         if path == "/":
             self._serve_html()
         elif path == "/status":
-            safe = {k: v for k, v in status.items() if k not in ("speakers", "sources")}
+            # Thread-safe snapshot: copy mutable containers to prevent
+            # RuntimeError from concurrent dict/list modification by
+            # the background generation thread.
+            try:
+                with status_lock:
+                    safe = {
+                        "running": status["running"],
+                        "phase": status["phase"],
+                        "total": status["total"],
+                        "completed": status["completed"],
+                        "errors": status["errors"],
+                        "log": list(status["log"]),
+                        "images": list(status["images"]),
+                        "done": status["done"],
+                        "output_dir": status["output_dir"],
+                        "episode_dir": status["episode_dir"],
+                        "round_num": status["round_num"],
+                        "ideas": list(status.get("ideas", [])),
+                        "idea_groups": {k: list(v) for k, v in status["idea_groups"].items()},
+                        "cost": status["cost"],
+                        "session_cost": status.get("session_cost", 0.0),
+                    }
+            except Exception:
+                # Fallback: return minimal status so polling doesn't break
+                safe = {
+                    "running": status.get("running", False),
+                    "done": status.get("done", False),
+                    "completed": status.get("completed", 0),
+                    "total": status.get("total", 0),
+                    "errors": status.get("errors", 0),
+                    "log": [], "images": [], "idea_groups": {},
+                    "phase": status.get("phase", "idle"),
+                    "output_dir": "", "episode_dir": "",
+                    "round_num": 0, "ideas": [],
+                    "cost": 0, "session_cost": 0,
+                }
             self._json_response(safe)
         elif path == "/image":
             self._serve_image(params.get("path", ""))
@@ -2002,7 +2081,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _handle_generate_from_ideas(self, body):
         """Generate 3 thumbnails per idea."""
         global status
-        if status["running"]:
+        with status_lock:
+            is_running = status["running"]
+        if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
 
@@ -2079,9 +2160,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
     def _handle_riff_idea(self, body):
-        """Generate 20 more thumbnails for a single idea."""
+        """Generate more thumbnails for a single idea."""
         global status
-        if status["running"]:
+        with status_lock:
+            is_running = status["running"]
+        if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
 
@@ -2120,8 +2203,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not episode_dir:
             episode_dir = os.path.join(THUMBNAILS_DIR, f"riff-{datetime.date.today().isoformat()}")
 
-        status["round_num"] = status.get("round_num", 1) + 1
-        round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
+        with status_lock:
+            status["round_num"] = status.get("round_num", 1) + 1
+            round_num = status["round_num"]
+
+            # Compute next available idea index (beyond all existing images and ideas)
+            existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
+            ideas_max = len(status.get("ideas", [])) - 1
+            riff_idea_idx = max(existing_max, ideas_max) + 1
+
+            # Track this riff idea server-side so future riff_idea_idx
+            # computations stay correct even without image data.
+            riff_label = f"(Riff on Idea {idea_idx + 1}) {idea_text}"
+            ideas_list = status.get("ideas", [])
+            while len(ideas_list) <= riff_idea_idx:
+                ideas_list.append("")
+            ideas_list[riff_idea_idx] = riff_label
+            status["ideas"] = ideas_list
+
+        round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
         # Build riff prompts — assign a NEW idea_idx so riffs appear as a new group
@@ -2131,11 +2231,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if riff_count > 50:
             riff_count = 50
         prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=riff_count)
-
-        # Compute next available idea index (beyond all existing images and ideas)
-        existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
-        ideas_max = len(status.get("ideas", [])) - 1
-        riff_idea_idx = max(existing_max, ideas_max) + 1
 
         prompts = [(riff_idea_idx, var, contents) for (_, var, contents) in prompts_raw]
 
@@ -2185,7 +2280,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_revise_post(self, body):
         global status
-        if status["running"]:
+        with status_lock:
+            is_running = status["running"]
+        if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
 
@@ -2215,8 +2312,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         speakers = status.get("speakers", [])
         episode_dir = status.get("episode_dir", "")
-        status["round_num"] = status.get("round_num", 1) + 1
-        round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
+        with status_lock:
+            status["round_num"] = status.get("round_num", 1) + 1
+            round_num = status["round_num"]
+        round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
         prompts = build_revision_prompts(selected_images, speakers, custom_prompt, count_per=3)
@@ -2228,7 +2327,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_vary(self, params):
         global status
-        if status["running"]:
+        with status_lock:
+            is_running = status["running"]
+        if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
 
@@ -2252,8 +2353,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         speakers = status.get("speakers", [])
         episode_dir = status.get("episode_dir", "")
-        status["round_num"] = status.get("round_num", 1) + 1
-        round_dir = os.path.join(episode_dir, f"round{status['round_num']}")
+        with status_lock:
+            status["round_num"] = status.get("round_num", 1) + 1
+            round_num = status["round_num"]
+        round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
         prompts = build_variation_prompts(selected_images, speakers, count_per=3)
