@@ -475,7 +475,7 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
     return prompts
 
 
-def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3):
+def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None):
     """Build revision prompts with custom instructions."""
     selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
     speaker_section = (
@@ -492,6 +492,10 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
                 variation_seed=v + 1,
             )
             contents = [prompt_text, img]
+            # Include user-uploaded attachment images in the revision
+            if attachment_refs:
+                contents.append("=== USER ATTACHMENT IMAGES — incorporate these into the revision as directed ===")
+                contents.extend(attachment_refs)
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
@@ -499,7 +503,7 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
             if selected_speaker_refs:
                 contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
                 contents.extend(selected_speaker_refs)
-            prompts.append((-1, v, contents))
+            prompts.append((idea_idx, v, contents))
     return prompts
 
 
@@ -1100,26 +1104,27 @@ HTML = r"""<!DOCTYPE html>
     <h2 id="gridLabel">Select Your Favorites</h2>
     <div class="actions-bar">
       <span class="selected-count"><span id="selectedCount">0</span> selected</span>
-      <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveFinals()" disabled>Save Finals</button>
-      <button class="btn btn-secondary btn-sm" id="downloadBtn" onclick="downloadSelected()" disabled>Download Selected</button>
-      <button class="btn btn-secondary btn-sm" onclick="openFolder()">Open Folder</button>
     </div>
   </div>
 
   <div class="revision-panel" id="revisionPanel">
     <label class="section">Revise Selected</label>
     <textarea id="revisionPrompt" rows="2" placeholder="e.g. Make the background darker, add more fire, change text to EXTINCTION..."></textarea>
+    <div class="mb" style="margin-top:8px;">
+      <label class="section">Attachments <span class="tag">Optional</span></label>
+      <div class="file-upload" id="revisionUpload" style="padding:12px;">
+        <input type="file" id="revisionFiles" multiple accept="image/*">
+        <div class="upload-label"><strong>Click to browse</strong> or drag & drop images to include in the revision</div>
+        <div class="file-previews" id="revisionPreviews"></div>
+      </div>
+    </div>
     <div class="revision-actions">
       <button class="btn btn-primary btn-sm" onclick="startRevision()">Revise with Prompt</button>
-      <button class="btn btn-secondary btn-sm" onclick="startVariations()">Generate Similar</button>
     </div>
   </div>
 
   <div id="ideaGroupsContainer"></div>
 
-  <div class="btn-row" style="margin-top:16px;">
-    <button class="btn btn-secondary" onclick="generateMoreIdeas()">Generate More Ideas</button>
-  </div>
 </div>
 
 <!-- COMPUTATION WINDOW — fixed upper-right -->
@@ -1229,6 +1234,7 @@ function showPreviews(input, container) {
 
 setupFileUpload('speakerUpload', 'speakerFiles', 'speakerPreviews');
 setupFileUpload('sourceUpload', 'sourceFiles', 'sourcePreviews');
+setupFileUpload('revisionUpload', 'revisionFiles', 'revisionPreviews');
 
 // Transcript
 (function() {
@@ -1703,27 +1709,7 @@ function addImageToGrid(img) {
     group.innerHTML =
       '<div class="idea-group-header">' +
         '<div class="idea-label">' + (ideaIdx >= 0 ? '<strong>Idea ' + (ideaIdx+1) + ':</strong> ' : '') + escHtml(ideaText) + '</div>' +
-        (ideaIdx >= 0 ? '<button class="btn btn-secondary btn-sm riff-btn" onclick="toggleRiffPanel(' + ideaIdx + ')">Riff</button>' : '') +
       '</div>' +
-      (ideaIdx >= 0 ? '<div class="riff-panel" id="riff-panel-' + ideaIdx + '" style="display:none;">' +
-        '<div class="mb">' +
-          '<label class="section">Riff Instructions <span class="tag">Optional</span></label>' +
-          '<textarea id="riff-prompt-' + ideaIdx + '" rows="2" placeholder="e.g. Make it more dramatic, add fire, change the headline to GAME OVER..."></textarea>' +
-        '</div>' +
-        '<div class="mb">' +
-          '<label class="section">Additional Images <span class="tag">Optional</span></label>' +
-          '<div class="file-upload" style="padding:12px;">' +
-            '<input type="file" id="riff-images-' + ideaIdx + '" multiple accept="image/*" onchange="showRiffPreviews(' + ideaIdx + ')">' +
-            '<div class="upload-label"><strong>Click to browse</strong> or drag & drop images to include in the riff</div>' +
-            '<div class="file-previews" id="riff-previews-' + ideaIdx + '"></div>' +
-          '</div>' +
-        '</div>' +
-        '<div class="btn-row" style="margin-top:8px;align-items:center;">' +
-          '<label class="section" style="margin:0;">Count:</label>' +
-          '<input type="number" id="riff-count-' + ideaIdx + '" value="3" min="1" max="50" style="width:60px;padding:6px 8px;font-size:13px;">' +
-          '<button class="btn btn-primary btn-sm riff-generate-btn" onclick="executeRiff(' + ideaIdx + ')">Generate Riffs</button>' +
-        '</div>' +
-      '</div>' : '') +
       '<div class="thumb-grid" id="idea-grid-' + ideaIdx + '"></div>';
     container.appendChild(group);
   }
@@ -1756,8 +1742,6 @@ function toggleSelect(idx) {
 
 function updateSelectedUI() {
   document.getElementById('selectedCount').textContent = selected.size;
-  document.getElementById('saveBtn').disabled = selected.size === 0;
-  document.getElementById('downloadBtn').disabled = selected.size === 0;
   const panel = document.getElementById('revisionPanel');
   if (selected.size > 0) panel.classList.add('visible');
   else panel.classList.remove('visible');
@@ -1767,39 +1751,52 @@ function startRevision() {
   const prompt = document.getElementById('revisionPrompt').value.trim();
   if (!prompt) { alert('Enter revision instructions.'); return; }
   const indices = Array.from(selected).join(',');
+
+  // Determine which idea(s) the selected images belong to for labeling
+  const selectedIdeas = new Set();
+  allImages.filter(img => selected.has(img.idx)).forEach(img => {
+    if (img.idea_idx >= 0 && img.idea_idx < ideas.length) {
+      selectedIdeas.add(img.idea_idx);
+    }
+  });
+  const sourceIdeasJson = JSON.stringify(Array.from(selectedIdeas));
+
+  const fd = new FormData();
+  fd.append('indices', indices);
+  fd.append('prompt', prompt);
+  fd.append('source_idea_indices', sourceIdeasJson);
+
+  // Include attachment files if any
+  const revisionFiles = document.getElementById('revisionFiles');
+  if (revisionFiles && revisionFiles.files.length > 0) {
+    for (const file of revisionFiles.files) {
+      fd.append('revision_images', file);
+    }
+  }
+
   fetch('/revise', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'indices=' + indices + '&prompt=' + encodeURIComponent(prompt),
+    body: fd,
   }).then(r => r.json()).then(data => {
     if (data.error) { alert(data.error); return; }
-    document.getElementById('gridLabel').textContent = 'Revisions — Select Your Finals';
+
+    // Register the revision as a new idea so addImageToGrid shows the label
+    const revIdeaIdx = data.revision_idea_idx;
+    if (revIdeaIdx !== undefined) {
+      while (ideas.length <= revIdeaIdx) ideas.push('');
+      ideas[revIdeaIdx] = data.revision_label || ('(Revision) ' + prompt);
+    }
+
+    document.getElementById('gridLabel').textContent = 'Revisions \u2014 Select Your Finals';
     selected.clear(); updateSelectedUI();
+    // Clear revision attachments
+    if (revisionFiles) revisionFiles.value = '';
+    const previews = document.getElementById('revisionPreviews');
+    if (previews) previews.innerHTML = '';
     showComputeWindow();
     startPolling();
   });
 }
-
-function startVariations() {
-  const indices = Array.from(selected).join(',');
-  fetch('/vary?indices=' + indices).then(r => r.json()).then(data => {
-    if (data.error) { alert(data.error); return; }
-    document.getElementById('gridLabel').textContent = 'Variations — Select Your Finals';
-    selected.clear(); updateSelectedUI();
-    showComputeWindow();
-    startPolling();
-  });
-}
-
-function saveFinals() {
-  const indices = Array.from(selected).join(',');
-  fetch('/save_finals?indices=' + indices).then(r => r.json()).then(data => {
-    if (data.error) { alert(data.error); return; }
-    alert('Saved ' + data.count + ' finals to:\n' + data.finals_dir);
-  });
-}
-
-function openFolder() { fetch('/open_folder'); }
 
 function downloadImage(encodedPath, filename) {
   fetch('/download?path=' + encodedPath)
@@ -2286,9 +2283,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"error": "Generation already in progress"})
             return
 
-        params = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
-        indices_raw = params.get("indices", "")
-        custom_prompt = params.get("prompt", "").strip()
+        # Parse multipart/form-data (for attachments) or url-encoded
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, files = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+            files = {}
+
+        indices_raw = fields.get("indices", "")
+        custom_prompt = fields.get("prompt", "").strip()
+        source_idea_indices_json = fields.get("source_idea_indices", "[]")
 
         indices = [int(x) for x in indices_raw.split(",") if x.strip().isdigit()]
         if not indices:
@@ -2299,9 +2304,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         selected_images = []
+        # Track which idea(s) the selected images belong to
+        source_idea_idxs = set()
         for img_info in status["images"]:
             if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
                 selected_images.append(Image.open(img_info["path"]))
+                if img_info.get("idea_idx", -1) >= 0:
+                    source_idea_idxs.add(img_info["idea_idx"])
 
         if not selected_images:
             if not status["images"]:
@@ -2310,20 +2319,71 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(status['images'])) + " known images). Try regenerating."})
             return
 
+        client = get_client()
+
+        # Upload attachment images if provided
+        attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
+
         speakers = status.get("speakers", [])
         episode_dir = status.get("episode_dir", "")
+
+        # Build revision label from source ideas
+        try:
+            src_indices = json.loads(source_idea_indices_json)
+        except (json.JSONDecodeError, ValueError):
+            src_indices = list(source_idea_idxs)
+
+        ideas_list = status.get("ideas", [])
+        source_parts = []
+        for si in src_indices:
+            si = int(si)
+            if 0 <= si < len(ideas_list) and ideas_list[si]:
+                source_parts.append(f"Idea {si + 1}: {ideas_list[si]}")
+            else:
+                source_parts.append(f"Idea {si + 1}")
+
+        prompt_summary = custom_prompt[:120] + ("..." if len(custom_prompt) > 120 else "")
+        if source_parts:
+            revision_label = f"{prompt_summary} [REVISION OF {', '.join(source_parts)}]"
+        else:
+            revision_label = f"(Revision) {prompt_summary}"
+
         with status_lock:
             status["round_num"] = status.get("round_num", 1) + 1
             round_num = status["round_num"]
+
+            # Compute next available idea index (like riff does)
+            existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
+            ideas_max = len(status.get("ideas", [])) - 1
+            revision_idea_idx = max(existing_max, ideas_max) + 1
+
+            # Track this revision idea server-side
+            while len(ideas_list) <= revision_idea_idx:
+                ideas_list.append("")
+            ideas_list[revision_idea_idx] = revision_label
+            status["ideas"] = ideas_list
+
         round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
-        prompts = build_revision_prompts(selected_images, speakers, custom_prompt, count_per=3)
+        prompts = build_revision_prompts(
+            selected_images,
+            speakers,
+            custom_prompt,
+            count_per=3,
+            idea_idx=revision_idea_idx,
+            attachment_refs=attachment_refs if attachment_refs else None,
+        )
 
-        client = get_client()
         run_generation(client, prompts, round_dir, "revision")
 
-        self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
+        self._json_response({
+            "ok": True,
+            "output_dir": round_dir,
+            "count": len(prompts),
+            "revision_idea_idx": revision_idea_idx,
+            "revision_label": revision_label,
+        })
 
     def _handle_vary(self, params):
         global status
