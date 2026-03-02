@@ -1132,6 +1132,42 @@ let allImages = [];
 let pollInterval = null;
 let transcript = '';
 
+// ----- Client-side session cost tracking -----
+// Persists in sessionStorage so it survives page refreshes and server restarts.
+let clientSessionCost = parseFloat(sessionStorage.getItem('doomSessionCost') || '0');
+let lastServerCost = 0;  // tracks the last server-reported session_cost to detect deltas
+
+function updateCostDisplay(cost) {
+  clientSessionCost = cost;
+  sessionStorage.setItem('doomSessionCost', cost.toFixed(4));
+  const fixedCost = document.getElementById('sessionCostDisplay');
+  if (fixedCost) fixedCost.innerHTML = 'Session cost: <strong>$' + cost.toFixed(2) + '</strong>';
+  const costAmount = document.getElementById('costAmount');
+  if (costAmount) {
+    costAmount.textContent = '$' + cost.toFixed(2);
+    document.getElementById('computeCost').style.display = 'block';
+  }
+}
+
+// Show saved cost immediately on page load
+updateCostDisplay(clientSessionCost);
+
+// Fetch current status on page load to sync cost & enable riff buttons if idle
+fetch('/status').then(r => r.json()).then(data => {
+  // Sync server cost into client tracking
+  if (data.session_cost > 0) {
+    lastServerCost = data.session_cost;
+    // Take the higher of client-tracked or server-reported
+    if (data.session_cost > clientSessionCost) {
+      updateCostDisplay(data.session_cost);
+    }
+  }
+  // If server is idle (not running), make sure riff buttons are enabled
+  if (data.done || !data.running) {
+    setRiffButtonsDisabled(false);
+  }
+}).catch(() => {});
+
 // ----- File upload helpers -----
 function setupFileUpload(uploadId, inputId, previewId) {
   const zone = document.getElementById(uploadId);
@@ -1405,7 +1441,7 @@ async function generateThumbnails() {
   fd.append('source_urls', JSON.stringify(selectedSources));
 
   try {
-    const resp = await fetch('/generate_from_ideas', { method: 'POST', body: fd });
+    const resp = await fetch('/generate_from_ideas', { method: 'POST', body: fd, credentials: 'same-origin' });
     const data = await resp.json();
     if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = 'Generate Thumbnails (3 per idea)'; return; }
 
@@ -1413,6 +1449,10 @@ async function generateThumbnails() {
     allImages = [];
     document.getElementById('ideaGroupsContainer').innerHTML = '';
     updateSelectedUI();
+
+    // Reset server cost baseline (server resets cost for round1, but session_cost persists)
+    lastServerCost = 0;
+    fetch('/status').then(r => r.json()).then(d => { lastServerCost = d.session_cost || 0; }).catch(() => {});
 
     document.getElementById('gridCard').classList.remove('hidden');
     showComputeWindow();
@@ -1455,11 +1495,15 @@ async function executeRiff(ideaIdx) {
   const riffCountInput = document.getElementById('riff-count-' + ideaIdx);
   const riffCount = riffCountInput ? parseInt(riffCountInput.value) || 3 : 3;
 
+  // Disable the Generate Riffs button to prevent double-clicks
+  const riffBtn = document.querySelector('#riff-panel-' + ideaIdx + ' .btn-primary');
+  if (riffBtn) { riffBtn.disabled = true; riffBtn.innerHTML = '<span class="spinner"></span> Starting...'; }
+
   const fd = new FormData();
   fd.append('idea_text', idea);
   fd.append('idea_idx', ideaIdx);
-  fd.append('custom_prompt', document.getElementById('customPrompt').value);
-  fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+  fd.append('custom_prompt', (document.getElementById('customPrompt') || {}).value || '');
+  fd.append('additional_instructions', (document.getElementById('additionalInstructions') || {}).value || '');
   fd.append('riff_prompt', riffPrompt);
   fd.append('riff_count', riffCount);
 
@@ -1472,7 +1516,11 @@ async function executeRiff(ideaIdx) {
   }
 
   try {
-    const resp = await fetch('/riff_idea', { method: 'POST', body: fd });
+    const resp = await fetch('/riff_idea', { method: 'POST', body: fd, credentials: 'same-origin' });
+    if (!resp.ok) {
+      alert('Riff request failed (HTTP ' + resp.status + '). Try again.');
+      return;
+    }
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
 
@@ -1485,11 +1533,17 @@ async function executeRiff(ideaIdx) {
     const panel = document.getElementById('riff-panel-' + ideaIdx);
     if (panel) panel.style.display = 'none';
 
+    // Reset the server's last-known cost baseline so deltas apply correctly
+    lastServerCost = 0;
+    fetch('/status').then(r => r.json()).then(d => { lastServerCost = d.session_cost || 0; }).catch(() => {});
+
     document.getElementById('gridCard').classList.remove('hidden');
     showComputeWindow();
     startPolling();
   } catch(e) {
-    alert('Error: ' + e);
+    alert('Riff error: ' + e);
+  } finally {
+    if (riffBtn) { riffBtn.disabled = false; riffBtn.innerHTML = 'Generate Riffs'; }
   }
 }
 
@@ -1552,14 +1606,16 @@ function pollStatus() {
     logArea.innerHTML = data.log.slice(-50).map(l => '<div>' + escHtml(l) + '</div>').join('');
     logArea.scrollTop = logArea.scrollHeight;
 
-    // Update cost (show session-wide aggregate)
-    if (data.session_cost !== undefined) {
-      const costEl = document.getElementById('computeCost');
-      costEl.style.display = 'block';
-      document.getElementById('costAmount').textContent = '$' + data.session_cost.toFixed(2);
-      // Also update the fixed cost display
-      const fixedCost = document.getElementById('sessionCostDisplay');
-      if (fixedCost) fixedCost.innerHTML = 'Session cost: <strong>$' + data.session_cost.toFixed(2) + '</strong>';
+    // Update cost (session-wide aggregate, tracked client-side)
+    if (data.session_cost !== undefined && data.session_cost > 0) {
+      const delta = data.session_cost - lastServerCost;
+      if (delta > 0) {
+        clientSessionCost += delta;
+        lastServerCost = data.session_cost;
+      }
+      // Always take the max of server vs client
+      const displayCost = Math.max(clientSessionCost, data.session_cost);
+      updateCostDisplay(displayCost);
     }
 
     // Add new images to grid
