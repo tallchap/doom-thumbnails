@@ -613,8 +613,12 @@ def run_generation(client, prompts, output_dir, phase="round1"):
         status["completed"] = 0
         status["errors"] = 0
         status["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
-        if phase in ("round1", "revision_page"):
+        if phase == "round1":
             status["images"] = []
+            status["idea_groups"] = {}
+            status["cost"] = 0.0
+        elif phase == "revision_page":
+            # Keep prior revision-page outputs visible; append new runs after existing ones.
             status["idea_groups"] = {}
             status["cost"] = 0.0
         # session_cost is never reset — it accumulates for the entire session
@@ -1884,10 +1888,8 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <input type="file" id="baseFile" accept="image/*" style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Original Thumbnail</button>
-      <span id="baseCount" class="hint">No base thumbnail attached</span>
+      <span id="baseCount" class="hint"></span>
     </div>
-    <div class="hint">This is the source thumbnail to modify. It appears in its own preview area here, above the prompt box.</div>
-    <div class="hint" style="margin-top:10px; color:#8fb2ff;">Base Preview (only the original thumbnail appears here)</div>
     <div id="basePreview" class="base-preview-grid"></div>
   </div>
 
@@ -1898,15 +1900,11 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
     <div class="hint">Paste examples into this box; pasted images are added as reference attachments.</div>
 
-    <label>Reference attachments (optional)</label>
     <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
-    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
       <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Reference Images</button>
-      <span id="attachCount" class="hint">No reference files attached</span>
+      <span id="attachCount" class="hint"></span>
     </div>
-    <div class="hint">Use button attach and/or paste examples into the prompt. Both are included.</div>
-
-    <div class="hint" style="margin-top:10px;">Reference Preview (examples only — not the base image)</div>
     <div id="refsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -1989,14 +1987,12 @@ function renderAttachmentsPreview() {
 
   if (baseCount) {
     baseCount.textContent = followUpBasePath
-      ? 'Using follow-up base from results'
-      : (baseAttachmentFile ? '1 base thumbnail attached' : 'No base thumbnail attached');
+      ? 'Using follow-up base'
+      : (baseAttachmentFile ? 'Base attached' : '');
   }
   if (attachCount) {
     const totalRefs = attachedImages.length + pastedImages.length;
-    attachCount.textContent = totalRefs
-      ? (totalRefs + ' reference image(s) attached')
-      : 'No reference files attached';
+    attachCount.textContent = totalRefs ? (totalRefs + ' ref image(s)') : '';
   }
 }
 
@@ -2081,8 +2077,6 @@ async function runRevision() {
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
     activeOutputDir = data.output_dir || '';
-    seen = new Set();
-    document.getElementById('resultsGrid').innerHTML = '';
     document.getElementById('statusText').textContent = 'Running 10 parallel attempts...';
     startPolling();
   } catch (e) {
@@ -2130,7 +2124,7 @@ function startPolling() {
       renderLogs(d.log || []);
       document.getElementById('statusText').textContent = d.running
         ? `Generating ${d.completed}/${d.total}... (${d.errors || 0} errors)`
-        : `Done: ${d.completed} generated (${d.errors || 0} errors)`;
+        : '';
       if (d.done && !d.running) {
         clearInterval(pollInterval);
         pollInterval = null;
