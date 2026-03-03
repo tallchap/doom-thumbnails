@@ -1877,6 +1877,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <label>Thumbnail to revise (required for first run)</label>
     <input type="file" id="baseThumb" accept="image/*">
     <div class="hint">Tip: after first run, click "Use as Base" under any result to do fast follow-up revisions.</div>
+    <div class="hint">Paste support: click this section, then paste (⌘V / Ctrl+V) an image copied from Chrome.</div>
 
     <div id="basePreviewWrap" class="preview-grid"></div>
 
@@ -1886,6 +1887,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <label>Extra reference images (optional)</label>
     <input type="file" id="extraFiles" accept="image/*" multiple>
     <div class="hint">Upload additional refs to incorporate. Previews shown below.</div>
+    <div class="hint">Paste support: click this section, then paste (⌘V / Ctrl+V) to append pasted images.</div>
     <div id="extraPreviews" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -1910,8 +1912,30 @@ let pollInterval = null;
 let seen = new Set();
 let activeOutputDir = '';
 let followUpBasePath = '';
+let pasteTarget = 'base';
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function mergeFiles(input, incomingFiles, replaceExisting) {
+  const dt = new DataTransfer();
+  if (!replaceExisting) {
+    for (const f of (input.files || [])) dt.items.add(f);
+  }
+  for (const f of incomingFiles) dt.items.add(f);
+  input.files = dt.files;
+}
+
+function getPastedImageFiles(e) {
+  const out = [];
+  const items = (e.clipboardData && e.clipboardData.items) ? e.clipboardData.items : [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) out.push(file);
+    }
+  }
+  return out;
+}
 
 function renderUploadPreview(containerId, files, labelPrefix) {
   const wrap = document.getElementById(containerId);
@@ -1937,11 +1961,39 @@ function renderBasePathPreview(path) {
 
 document.getElementById('baseThumb').addEventListener('change', (e) => {
   followUpBasePath = '';
+  pasteTarget = 'base';
   renderUploadPreview('basePreviewWrap', e.target.files, 'Base image');
 });
 
 document.getElementById('extraFiles').addEventListener('change', (e) => {
+  pasteTarget = 'extra';
   renderUploadPreview('extraPreviews', e.target.files, 'Reference');
+});
+
+document.getElementById('basePreviewWrap').addEventListener('click', () => { pasteTarget = 'base'; });
+document.getElementById('extraPreviews').addEventListener('click', () => { pasteTarget = 'extra'; });
+document.getElementById('baseThumb').addEventListener('click', () => { pasteTarget = 'base'; });
+document.getElementById('extraFiles').addEventListener('click', () => { pasteTarget = 'extra'; });
+
+document.addEventListener('paste', (e) => {
+  const pasted = getPastedImageFiles(e);
+  if (!pasted.length) return;
+  e.preventDefault();
+
+  if (pasteTarget === 'extra') {
+    const input = document.getElementById('extraFiles');
+    mergeFiles(input, pasted, false);
+    renderUploadPreview('extraPreviews', input.files, 'Reference');
+    document.getElementById('statusText').textContent = 'Pasted ' + pasted.length + ' reference image(s).';
+    return;
+  }
+
+  // Default: base image slot (replace existing base)
+  const baseInput = document.getElementById('baseThumb');
+  followUpBasePath = '';
+  mergeFiles(baseInput, [pasted[0]], true);
+  renderUploadPreview('basePreviewWrap', baseInput.files, 'Base image');
+  document.getElementById('statusText').textContent = 'Pasted base image from clipboard.';
 });
 
 function clearFollowUpBase() {
