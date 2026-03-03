@@ -1866,6 +1866,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
   .item img { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; }
   .item .meta { padding:8px; color:#a0a0b0; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .status { color:#4ade80; font-size:13px; margin-top:8px; }
+  .costline { color:#facc15; font-size:13px; margin-top:6px; }
   .preview-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; margin-top:10px; }
   .base-preview-grid { display:grid; grid-template-columns:minmax(260px, 420px); gap:10px; margin-top:10px; }
   .preview { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
@@ -1917,6 +1918,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
     </div>
     <div id="statusText" class="status"></div>
+    <div id="costText" class="costline"></div>
   </div>
 
   <div class="card">
@@ -2129,6 +2131,15 @@ async function runRevision() {
   }
 }
 
+function downloadResult(pathEncoded, idx) {
+  const a = document.createElement('a');
+  a.href = '/download?path=' + pathEncoded;
+  a.download = 'thumb_' + idx + '.png';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 function addImageCard(img) {
   if (activeOutputDir && (!img.path || !img.path.startsWith(activeOutputDir))) return;
   if (seen.has(img.idx)) return;
@@ -2137,7 +2148,7 @@ function addImageCard(img) {
   const div = document.createElement('div');
   div.className = 'item';
   div.innerHTML = '<img src="/image?path=' + encodeURIComponent(img.path) + '">' +
-    '<div class="meta"><span>Attempt #' + img.idx + '</span><button class="btn btn-sm" onclick="setFollowUpBase(\'' + encodeURIComponent(img.path) + '\')">Use as Base</button></div>';
+    '<div class="meta"><span>Attempt #' + img.idx + '</span><span style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="setFollowUpBase(\'' + encodeURIComponent(img.path) + '\')">Use as Base</button><button class="btn btn-sm" style="background:#0f3460;" onclick="downloadResult(\'' + encodeURIComponent(img.path) + '\',' + img.idx + ')">Download</button></span></div>';
   grid.appendChild(div);
 }
 
@@ -2167,6 +2178,9 @@ function startPolling() {
       document.getElementById('statusText').textContent = d.running
         ? `Generating ${d.completed}/${d.total}... (${d.errors || 0} errors)`
         : '';
+      const runCost = (typeof d.cost === 'number') ? d.cost : 0;
+      const sessionCost = (typeof d.session_cost === 'number') ? d.session_cost : 0;
+      document.getElementById('costText').textContent = `API spend — run: $${runCost.toFixed(2)} | session: $${sessionCost.toFixed(2)}`;
       if (d.done && !d.running) {
         clearInterval(pollInterval);
         pollInterval = null;
