@@ -1873,6 +1873,8 @@ HTML_REVISION = r"""<!DOCTYPE html>
   .preview .cap { padding:6px 8px; color:#a0a0b0; font-size:11px; word-break:break-word; display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .xbtn { border:none; background:#263b6a; color:#fff; border-radius:999px; width:20px; height:20px; line-height:20px; font-size:12px; cursor:pointer; padding:0; }
   .xbtn:hover { background:#e94560; }
+  .paste-zone { margin-top:10px; border:2px dashed #2b5fb3; border-radius:10px; padding:14px; color:#9fb8e8; cursor:pointer; user-select:none; }
+  .paste-zone.active { border-color:#4ade80; color:#c7f9d6; background:rgba(74,222,128,.08); }
   .btn-sm { font-size:11px; padding:6px 8px; }
   .logs { background:#0d1b3e; border:1px solid #0f3460; border-radius:8px; padding:10px; min-height:130px; max-height:240px; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
   .log-line { margin-bottom:4px; color:#b8c0d8; }
@@ -1892,6 +1894,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Original Thumbnail</button>
       <span id="baseCount" class="hint"></span>
     </div>
+    <div id="basePasteZone" class="paste-zone" tabindex="0">Click here, then paste (Ctrl+V / ⌘V) to set the primary thumbnail</div>
     <div id="basePreview" class="base-preview-grid"></div>
   </div>
 
@@ -2038,6 +2041,24 @@ document.getElementById('attachFiles').addEventListener('change', (e) => {
     document.getElementById('statusText').textContent = 'Attached ' + attachedImages.length + ' reference image file(s).';
   }
 });
+
+const basePasteZone = document.getElementById('basePasteZone');
+if (basePasteZone) {
+  basePasteZone.addEventListener('click', () => basePasteZone.focus());
+  basePasteZone.addEventListener('focus', () => basePasteZone.classList.add('active'));
+  basePasteZone.addEventListener('blur', () => basePasteZone.classList.remove('active'));
+  basePasteZone.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    baseAttachmentFile = pasted[0];
+    followUpBasePath = '';
+    const baseInput = document.getElementById('baseFile');
+    if (baseInput) baseInput.value = '';
+    renderAttachmentsPreview();
+    document.getElementById('statusText').textContent = 'Primary thumbnail pasted.';
+  });
+}
 
 document.getElementById('feedback').addEventListener('paste', (e) => {
   const pasted = getPastedImageFiles(e);
