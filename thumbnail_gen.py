@@ -130,6 +130,7 @@ REVISION INSTRUCTIONS: {custom_prompt}
 
 Keep the core composition but apply the requested changes.
 Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one short headline, nothing else.
+TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in quotes (single or double), preserve that quoted text EXACTLY as written — same words, order, punctuation, apostrophes, and capitalization. Do NOT paraphrase, normalize, or substitute synonyms for quoted text.
 {speaker_section}
 - The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
 
