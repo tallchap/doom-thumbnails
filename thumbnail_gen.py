@@ -613,7 +613,7 @@ def run_generation(client, prompts, output_dir, phase="round1"):
         status["completed"] = 0
         status["errors"] = 0
         status["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
-        if phase == "round1":
+        if phase in ("round1", "revision_page"):
             status["images"] = []
             status["idea_groups"] = {}
             status["cost"] = 0.0
@@ -1013,6 +1013,7 @@ HTML = r"""<!DOCTYPE html>
 
 <h1>Doom Debates — Thumbnail Generator</h1>
 <div class="subtitle">Model: Nano Banana 2 (gemini-3.1-flash-image-preview) — Idea-first workflow</div>
+<div style="margin-bottom:16px;"><a href="/revision" style="color:#4ade80;text-decoration:none;font-weight:600;">→ Open Thumbnail Revision Page</a></div>
 
 <!-- STEP 1: INPUTS -->
 <div class="card" id="inputCard">
@@ -1836,6 +1837,124 @@ function escHtml(s) {
 </body>
 </html>"""
 
+HTML_REVISION = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Doom Debates — Thumbnail Revision</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:#1a1a2e; color:#e0e0e0; margin:0; padding:24px; }
+  .card { background:#16213e; border:1px solid #0f3460; border-radius:12px; padding:20px; margin-bottom:16px; }
+  h1 { margin:0 0 8px; }
+  .subtitle { color:#a0a0b0; margin-bottom:14px; }
+  label { display:block; margin:10px 0 6px; color:#a0a0b0; font-size:13px; text-transform:uppercase; }
+  input[type="file"], textarea { width:100%; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:10px; }
+  textarea { min-height:90px; resize:vertical; }
+  .btn { background:#e94560; color:#fff; border:none; border-radius:8px; padding:10px 16px; font-weight:700; cursor:pointer; }
+  .btn:disabled { opacity:.6; cursor:not-allowed; }
+  .hint { color:#a0a0b0; font-size:12px; margin-top:6px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; margin-top:12px; }
+  .item { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
+  .item img { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; }
+  .item .meta { padding:8px; color:#a0a0b0; font-size:12px; }
+  .status { color:#4ade80; font-size:13px; margin-top:8px; }
+</style>
+</head>
+<body>
+  <h1>Thumbnail Revision Page</h1>
+  <div class="subtitle">Upload one thumbnail + revision feedback. The app runs 10 attempts in parallel and shows all outputs.</div>
+  <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
+
+  <div class="card">
+    <label>Thumbnail to revise (required)</label>
+    <input type="file" id="baseThumb" accept="image/*">
+
+    <label>Revision feedback (required)</label>
+    <textarea id="feedback" placeholder="e.g. Make title bigger, darken background, add warning icon, keep face likeness."></textarea>
+
+    <label>Extra reference images (optional)</label>
+    <input type="file" id="extraFiles" accept="image/*" multiple>
+    <div class="hint">You can upload images/text references that the model should incorporate.</div>
+
+    <div style="margin-top:14px;"><button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button></div>
+    <div id="statusText" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Results</h3>
+    <div id="resultsGrid" class="grid"></div>
+  </div>
+
+<script>
+let pollInterval = null;
+let seen = new Set();
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function runRevision() {
+  const fileInput = document.getElementById('baseThumb');
+  const feedback = document.getElementById('feedback').value.trim();
+  if (!fileInput.files.length) { alert('Upload a thumbnail to revise.'); return; }
+  if (!feedback) { alert('Enter revision feedback.'); return; }
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  document.getElementById('resultsGrid').innerHTML = '';
+  seen = new Set();
+
+  const fd = new FormData();
+  fd.append('base_thumbnail', fileInput.files[0]);
+  fd.append('prompt', feedback);
+  const extras = document.getElementById('extraFiles');
+  for (const f of extras.files) fd.append('revision_images', f);
+
+  try {
+    const resp = await fetch('/revise_upload', { method:'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    document.getElementById('statusText').textContent = 'Running 10 parallel attempts...';
+    startPolling();
+  } catch (e) {
+    alert('Error: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate 10 Revision Attempts';
+  }
+}
+
+function addImageCard(img) {
+  if (seen.has(img.idx)) return;
+  seen.add(img.idx);
+  const grid = document.getElementById('resultsGrid');
+  const div = document.createElement('div');
+  div.className = 'item';
+  div.innerHTML = '<img src="/image?path=' + encodeURIComponent(img.path) + '"><div class="meta">Attempt #' + img.idx + '</div>';
+  grid.appendChild(div);
+}
+
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(async () => {
+    try {
+      const r = await fetch('/status');
+      const d = await r.json();
+      (d.images || []).forEach(addImageCard);
+      document.getElementById('statusText').textContent = d.running
+        ? `Generating ${d.completed}/${d.total}...`
+        : `Done: ${d.completed} generated (${d.errors || 0} errors)`;
+      if (d.done && !d.running) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    } catch (_) {}
+  }, 1200);
+}
+</script>
+</body>
+</html>"""
+
 # ----- HTTP Server -----
 
 
@@ -1882,6 +2001,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _route_get(self, path, params):
         if path == "/":
             self._serve_html()
+        elif path == "/revision":
+            self._serve_revision_html()
         elif path == "/status":
             # Thread-safe snapshot: copy mutable containers to prevent
             # RuntimeError from concurrent dict/list modification by
@@ -1947,6 +2068,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             if path == "/gather_images":
                 self._handle_gather_images(body)
+            elif path == "/revise_upload":
+                self._handle_revise_upload(body)
             elif path == "/generate_ideas":
                 self._handle_generate_ideas(body)
             elif path == "/generate_from_ideas":
@@ -1971,6 +2094,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(HTML.encode("utf-8"))
+
+    def _serve_revision_html(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(HTML_REVISION.encode("utf-8"))
 
     def _json_response(self, data):
         self.send_response(200)
@@ -2275,6 +2404,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"ok": True, "ideas": new_ideas})
         except Exception as e:
             self._json_response({"error": f"Idea generation failed: {str(e)[:200]}"})
+
+    def _handle_revise_upload(self, body):
+        global status
+        with status_lock:
+            is_running = status["running"]
+        if is_running:
+            self._json_response({"error": "Generation already in progress"})
+            return
+
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, files = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+            files = {}
+
+        prompt = fields.get("prompt", "").strip()
+        base_files = files.get("base_thumbnail", [])
+        if not base_files:
+            self._json_response({"error": "Upload one base thumbnail image"})
+            return
+        if not prompt:
+            self._json_response({"error": "Revision prompt is required"})
+            return
+
+        try:
+            base_img = Image.open(io.BytesIO(base_files[0])).convert("RGB")
+        except Exception:
+            self._json_response({"error": "Could not parse uploaded thumbnail image"})
+            return
+
+        client = get_client()
+        attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
+
+        episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
+        with status_lock:
+            status["round_num"] = status.get("round_num", 0) + 1
+            round_num = status["round_num"]
+            revision_idea_idx = 0
+            status["ideas"] = [f"Revision page: {prompt[:120]}"]
+            status["episode_dir"] = episode_dir
+
+        round_dir = os.path.join(episode_dir, f"round{round_num}")
+        os.makedirs(round_dir, exist_ok=True)
+
+        prompts = build_revision_prompts(
+            [base_img],
+            status.get("speakers", []),
+            prompt,
+            count_per=10,
+            idea_idx=revision_idea_idx,
+            attachment_refs=attachment_refs if attachment_refs else None,
+        )
+
+        run_generation(client, prompts, round_dir, "revision_page")
+
+        self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
     def _handle_revise_post(self, body):
         global status
