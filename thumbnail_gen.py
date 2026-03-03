@@ -1874,25 +1874,16 @@ HTML_REVISION = r"""<!DOCTYPE html>
   <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
 
   <div class="card">
-    <label>Thumbnail to revise (required for first run)</label>
-    <input type="file" id="baseThumb" accept="image/*">
-    <div class="hint">Tip: after first run, click "Use as Base" under any result to do fast follow-up revisions.</div>
-    <div class="hint">Paste support: click this section, then paste (⌘V / Ctrl+V) an image copied from Chrome.</div>
+    <label>Revision input (single textbox)</label>
+    <textarea id="feedback" placeholder="Type revision instructions here. While cursor is in this box, paste (⌘V / Ctrl+V) images copied from Chrome; pasted images are attached automatically."></textarea>
+    <div class="hint">Single-input flow: type prompt + paste images in this same textbox. First pasted image is used as base thumbnail; additional pasted images are references. Tip: after first run, click "Use as Base" under any result for follow-up revisions.</div>
 
-    <div id="basePreviewWrap" class="preview-grid"></div>
-
-    <label>Revision feedback (required)</label>
-    <textarea id="feedback" placeholder="e.g. Make title bigger, darken background, add warning icon, keep face likeness."></textarea>
-
-    <label>Extra reference images (optional)</label>
-    <input type="file" id="extraFiles" accept="image/*" multiple>
-    <div class="hint">Upload additional refs to incorporate. Previews shown below.</div>
-    <div class="hint">Paste support: click this section, then paste (⌘V / Ctrl+V) to append pasted images.</div>
-    <div id="extraPreviews" class="preview-grid"></div>
+    <div id="attachmentsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
       <button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button>
       <button id="clearFollowupBtn" class="btn" style="background:#0f3460;" onclick="clearFollowUpBase()">Clear Follow-up Base</button>
+      <button id="clearPastedBtn" class="btn" style="background:#0f3460;" onclick="clearPastedImages()">Clear Pasted Images</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -1912,18 +1903,9 @@ let pollInterval = null;
 let seen = new Set();
 let activeOutputDir = '';
 let followUpBasePath = '';
-let pasteTarget = 'base';
+let pastedImages = [];
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-
-function mergeFiles(input, incomingFiles, replaceExisting) {
-  const dt = new DataTransfer();
-  if (!replaceExisting) {
-    for (const f of (input.files || [])) dt.items.add(f);
-  }
-  for (const f of incomingFiles) dt.items.add(f);
-  input.files = dt.files;
-}
 
 function getPastedImageFiles(e) {
   const out = [];
@@ -1937,76 +1919,55 @@ function getPastedImageFiles(e) {
   return out;
 }
 
-function renderUploadPreview(containerId, files, labelPrefix) {
-  const wrap = document.getElementById(containerId);
+function renderAttachmentsPreview() {
+  const wrap = document.getElementById('attachmentsPreview');
   wrap.innerHTML = '';
-  Array.from(files || []).forEach((f, idx) => {
+
+  if (followUpBasePath) {
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="/image?path=' + encodeURIComponent(followUpBasePath) + '"><div class="cap">Base: selected from prior result</div>';
+    wrap.appendChild(card);
+  }
+
+  pastedImages.forEach((f, idx) => {
     const url = URL.createObjectURL(f);
     const card = document.createElement('div');
     card.className = 'preview';
-    card.innerHTML = '<img src="' + url + '"><div class="cap">' + esc(labelPrefix) + ' #' + (idx + 1) + ' — ' + esc(f.name) + '</div>';
+    const role = (!followUpBasePath && idx === 0) ? 'Base (from paste)' : 'Reference';
+    card.innerHTML = '<img src="' + url + '"><div class="cap">' + role + ' — ' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</div>';
     wrap.appendChild(card);
   });
 }
 
-function renderBasePathPreview(path) {
-  const wrap = document.getElementById('basePreviewWrap');
-  wrap.innerHTML = '';
-  if (!path) return;
-  const card = document.createElement('div');
-  card.className = 'preview';
-  card.innerHTML = '<img src="/image?path=' + encodeURIComponent(path) + '"><div class="cap">Follow-up base from prior result</div>';
-  wrap.appendChild(card);
-}
-
-document.getElementById('baseThumb').addEventListener('change', (e) => {
-  followUpBasePath = '';
-  pasteTarget = 'base';
-  renderUploadPreview('basePreviewWrap', e.target.files, 'Base image');
-});
-
-document.getElementById('extraFiles').addEventListener('change', (e) => {
-  pasteTarget = 'extra';
-  renderUploadPreview('extraPreviews', e.target.files, 'Reference');
-});
-
-document.getElementById('basePreviewWrap').addEventListener('click', () => { pasteTarget = 'base'; });
-document.getElementById('extraPreviews').addEventListener('click', () => { pasteTarget = 'extra'; });
-document.getElementById('baseThumb').addEventListener('click', () => { pasteTarget = 'base'; });
-document.getElementById('extraFiles').addEventListener('click', () => { pasteTarget = 'extra'; });
-
-document.addEventListener('paste', (e) => {
+document.getElementById('feedback').addEventListener('paste', (e) => {
   const pasted = getPastedImageFiles(e);
   if (!pasted.length) return;
   e.preventDefault();
-
-  if (pasteTarget === 'extra') {
-    const input = document.getElementById('extraFiles');
-    mergeFiles(input, pasted, false);
-    renderUploadPreview('extraPreviews', input.files, 'Reference');
-    document.getElementById('statusText').textContent = 'Pasted ' + pasted.length + ' reference image(s).';
-    return;
-  }
-
-  // Default: base image slot (replace existing base)
-  const baseInput = document.getElementById('baseThumb');
-  followUpBasePath = '';
-  mergeFiles(baseInput, [pasted[0]], true);
-  renderUploadPreview('basePreviewWrap', baseInput.files, 'Base image');
-  document.getElementById('statusText').textContent = 'Pasted base image from clipboard.';
+  pastedImages = pastedImages.concat(pasted);
+  renderAttachmentsPreview();
+  document.getElementById('statusText').textContent = 'Attached ' + pasted.length + ' pasted image(s) from clipboard.';
 });
+
+function clearPastedImages() {
+  pastedImages = [];
+  renderAttachmentsPreview();
+}
 
 function clearFollowUpBase() {
   followUpBasePath = '';
-  document.getElementById('baseThumb').value = '';
-  document.getElementById('basePreviewWrap').innerHTML = '';
+  renderAttachmentsPreview();
 }
 
 async function runRevision() {
-  const fileInput = document.getElementById('baseThumb');
   const feedback = document.getElementById('feedback').value.trim();
-  if (!fileInput.files.length && !followUpBasePath) { alert('Upload a thumbnail (or use a prior output as base).'); return; }
   if (!feedback) { alert('Enter revision feedback.'); return; }
+
+  const hasBaseFromPaste = !followUpBasePath && pastedImages.length > 0;
+  if (!followUpBasePath && !hasBaseFromPaste) {
+    alert('Paste at least one image into the textbox (or choose "Use as Base" from a prior result).');
+    return;
+  }
 
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
@@ -2014,11 +1975,14 @@ async function runRevision() {
   document.getElementById('statusText').textContent = 'Submitting revision request...';
 
   const fd = new FormData();
-  if (fileInput.files.length) fd.append('base_thumbnail', fileInput.files[0]);
-  if (followUpBasePath) fd.append('base_path', followUpBasePath);
+  if (followUpBasePath) {
+    fd.append('base_path', followUpBasePath);
+    for (const f of pastedImages) fd.append('revision_images', f, f.name || 'pasted_ref.png');
+  } else {
+    fd.append('base_thumbnail', pastedImages[0], pastedImages[0].name || 'pasted_base.png');
+    for (const f of pastedImages.slice(1)) fd.append('revision_images', f, f.name || 'pasted_ref.png');
+  }
   fd.append('prompt', feedback);
-  const extras = document.getElementById('extraFiles');
-  for (const f of extras.files) fd.append('revision_images', f);
 
   try {
     const resp = await fetch('/revise_upload', { method:'POST', body: fd });
@@ -2051,8 +2015,7 @@ function addImageCard(img) {
 
 function setFollowUpBase(encodedPath) {
   followUpBasePath = decodeURIComponent(encodedPath);
-  document.getElementById('baseThumb').value = '';
-  renderBasePathPreview(followUpBasePath);
+  renderAttachmentsPreview();
   document.getElementById('statusText').textContent = 'Follow-up base selected. Enter feedback and run again.';
 }
 
