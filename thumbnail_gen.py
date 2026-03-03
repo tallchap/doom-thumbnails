@@ -1857,28 +1857,47 @@ HTML_REVISION = r"""<!DOCTYPE html>
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; margin-top:12px; }
   .item { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
   .item img { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; }
-  .item .meta { padding:8px; color:#a0a0b0; font-size:12px; }
+  .item .meta { padding:8px; color:#a0a0b0; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .status { color:#4ade80; font-size:13px; margin-top:8px; }
+  .preview-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; margin-top:10px; }
+  .preview { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
+  .preview img { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; }
+  .preview .cap { padding:6px 8px; color:#a0a0b0; font-size:11px; word-break:break-word; }
+  .btn-sm { font-size:11px; padding:6px 8px; }
+  .logs { background:#0d1b3e; border:1px solid #0f3460; border-radius:8px; padding:10px; min-height:130px; max-height:240px; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  .log-line { margin-bottom:4px; color:#b8c0d8; }
 </style>
 </head>
 <body>
   <h1>Thumbnail Revision Page</h1>
-  <div class="subtitle">Upload one thumbnail + revision feedback. The app runs 10 attempts in parallel and shows all outputs.</div>
+  <div class="subtitle">Upload one thumbnail + revision feedback. Runs 10 attempts in parallel, shows logs live, and supports follow-up revisions on any output.</div>
   <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
 
   <div class="card">
-    <label>Thumbnail to revise (required)</label>
+    <label>Thumbnail to revise (required for first run)</label>
     <input type="file" id="baseThumb" accept="image/*">
+    <div class="hint">Tip: after first run, click "Use as Base" under any result to do fast follow-up revisions.</div>
+
+    <div id="basePreviewWrap" class="preview-grid"></div>
 
     <label>Revision feedback (required)</label>
     <textarea id="feedback" placeholder="e.g. Make title bigger, darken background, add warning icon, keep face likeness."></textarea>
 
     <label>Extra reference images (optional)</label>
     <input type="file" id="extraFiles" accept="image/*" multiple>
-    <div class="hint">You can upload images/text references that the model should incorporate.</div>
+    <div class="hint">Upload additional refs to incorporate. Previews shown below.</div>
+    <div id="extraPreviews" class="preview-grid"></div>
 
-    <div style="margin-top:14px;"><button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button></div>
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
+      <button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button>
+      <button id="clearFollowupBtn" class="btn" style="background:#0f3460;" onclick="clearFollowUpBase()">Clear Follow-up Base</button>
+    </div>
     <div id="statusText" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Live Logs</h3>
+    <div id="logBox" class="logs"></div>
   </div>
 
   <div class="card">
@@ -1889,23 +1908,62 @@ HTML_REVISION = r"""<!DOCTYPE html>
 <script>
 let pollInterval = null;
 let seen = new Set();
+let activeOutputDir = '';
+let followUpBasePath = '';
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function renderUploadPreview(containerId, files, labelPrefix) {
+  const wrap = document.getElementById(containerId);
+  wrap.innerHTML = '';
+  Array.from(files || []).forEach((f, idx) => {
+    const url = URL.createObjectURL(f);
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="' + url + '"><div class="cap">' + esc(labelPrefix) + ' #' + (idx + 1) + ' — ' + esc(f.name) + '</div>';
+    wrap.appendChild(card);
+  });
+}
+
+function renderBasePathPreview(path) {
+  const wrap = document.getElementById('basePreviewWrap');
+  wrap.innerHTML = '';
+  if (!path) return;
+  const card = document.createElement('div');
+  card.className = 'preview';
+  card.innerHTML = '<img src="/image?path=' + encodeURIComponent(path) + '"><div class="cap">Follow-up base from prior result</div>';
+  wrap.appendChild(card);
+}
+
+document.getElementById('baseThumb').addEventListener('change', (e) => {
+  followUpBasePath = '';
+  renderUploadPreview('basePreviewWrap', e.target.files, 'Base image');
+});
+
+document.getElementById('extraFiles').addEventListener('change', (e) => {
+  renderUploadPreview('extraPreviews', e.target.files, 'Reference');
+});
+
+function clearFollowUpBase() {
+  followUpBasePath = '';
+  document.getElementById('baseThumb').value = '';
+  document.getElementById('basePreviewWrap').innerHTML = '';
+}
 
 async function runRevision() {
   const fileInput = document.getElementById('baseThumb');
   const feedback = document.getElementById('feedback').value.trim();
-  if (!fileInput.files.length) { alert('Upload a thumbnail to revise.'); return; }
+  if (!fileInput.files.length && !followUpBasePath) { alert('Upload a thumbnail (or use a prior output as base).'); return; }
   if (!feedback) { alert('Enter revision feedback.'); return; }
 
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
   btn.textContent = 'Starting...';
-  document.getElementById('resultsGrid').innerHTML = '';
-  seen = new Set();
+  document.getElementById('statusText').textContent = 'Submitting revision request...';
 
   const fd = new FormData();
-  fd.append('base_thumbnail', fileInput.files[0]);
+  if (fileInput.files.length) fd.append('base_thumbnail', fileInput.files[0]);
+  if (followUpBasePath) fd.append('base_path', followUpBasePath);
   fd.append('prompt', feedback);
   const extras = document.getElementById('extraFiles');
   for (const f of extras.files) fd.append('revision_images', f);
@@ -1914,6 +1972,9 @@ async function runRevision() {
     const resp = await fetch('/revise_upload', { method:'POST', body: fd });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
+    activeOutputDir = data.output_dir || '';
+    seen = new Set();
+    document.getElementById('resultsGrid').innerHTML = '';
     document.getElementById('statusText').textContent = 'Running 10 parallel attempts...';
     startPolling();
   } catch (e) {
@@ -1925,13 +1986,28 @@ async function runRevision() {
 }
 
 function addImageCard(img) {
+  if (activeOutputDir && (!img.path || !img.path.startsWith(activeOutputDir))) return;
   if (seen.has(img.idx)) return;
   seen.add(img.idx);
   const grid = document.getElementById('resultsGrid');
   const div = document.createElement('div');
   div.className = 'item';
-  div.innerHTML = '<img src="/image?path=' + encodeURIComponent(img.path) + '"><div class="meta">Attempt #' + img.idx + '</div>';
+  div.innerHTML = '<img src="/image?path=' + encodeURIComponent(img.path) + '">' +
+    '<div class="meta"><span>Attempt #' + img.idx + '</span><button class="btn btn-sm" onclick="setFollowUpBase(\'' + encodeURIComponent(img.path) + '\')">Use as Base</button></div>';
   grid.appendChild(div);
+}
+
+function setFollowUpBase(encodedPath) {
+  followUpBasePath = decodeURIComponent(encodedPath);
+  document.getElementById('baseThumb').value = '';
+  renderBasePathPreview(followUpBasePath);
+  document.getElementById('statusText').textContent = 'Follow-up base selected. Enter feedback and run again.';
+}
+
+function renderLogs(logs) {
+  const box = document.getElementById('logBox');
+  box.innerHTML = (logs || []).slice(-80).map(l => '<div class="log-line">' + esc(l) + '</div>').join('');
+  box.scrollTop = box.scrollHeight;
 }
 
 function startPolling() {
@@ -1941,16 +2017,19 @@ function startPolling() {
       const r = await fetch('/status');
       const d = await r.json();
       (d.images || []).forEach(addImageCard);
+      renderLogs(d.log || []);
       document.getElementById('statusText').textContent = d.running
-        ? `Generating ${d.completed}/${d.total}...`
+        ? `Generating ${d.completed}/${d.total}... (${d.errors || 0} errors)`
         : `Done: ${d.completed} generated (${d.errors || 0} errors)`;
       if (d.done && !d.running) {
         clearInterval(pollInterval);
         pollInterval = null;
       }
     } catch (_) {}
-  }, 1200);
+  }, 1000);
 }
+
+startPolling();
 </script>
 </body>
 </html>"""
@@ -2422,18 +2501,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         prompt = fields.get("prompt", "").strip()
         base_files = files.get("base_thumbnail", [])
-        if not base_files:
-            self._json_response({"error": "Upload one base thumbnail image"})
-            return
+        base_path = fields.get("base_path", "").strip()
+
         if not prompt:
             self._json_response({"error": "Revision prompt is required"})
             return
-
-        try:
-            base_img = Image.open(io.BytesIO(base_files[0])).convert("RGB")
-        except Exception:
-            self._json_response({"error": "Could not parse uploaded thumbnail image"})
+        if not base_files and not base_path:
+            self._json_response({"error": "Upload one base thumbnail image (or choose a prior output as follow-up base)"})
             return
+
+        base_img = None
+        if base_files:
+            try:
+                base_img = Image.open(io.BytesIO(base_files[0])).convert("RGB")
+            except Exception:
+                self._json_response({"error": "Could not parse uploaded thumbnail image"})
+                return
+        else:
+            try:
+                real = os.path.realpath(base_path)
+                if not real.startswith(os.path.realpath(THUMBNAILS_DIR)) or not os.path.isfile(real):
+                    self._json_response({"error": "Invalid follow-up base image path"})
+                    return
+                base_img = Image.open(real).convert("RGB")
+            except Exception:
+                self._json_response({"error": "Could not load follow-up base image"})
+                return
 
         client = get_client()
         attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
@@ -2459,6 +2552,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         )
 
         run_generation(client, prompts, round_dir, "revision_page")
+        with status_lock:
+            base_src = "uploaded file" if base_files else "follow-up result"
+            status["log"].append(f"Revision base: {base_src}")
+            status["log"].append(f"Prompt: {prompt[:180]}")
+            status["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
