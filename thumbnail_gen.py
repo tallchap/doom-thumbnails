@@ -1860,6 +1860,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
   .item .meta { padding:8px; color:#a0a0b0; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .status { color:#4ade80; font-size:13px; margin-top:8px; }
   .preview-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; margin-top:10px; }
+  .base-preview-grid { display:grid; grid-template-columns:minmax(260px, 420px); gap:10px; margin-top:10px; }
   .preview { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
   .preview img { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; }
   .preview .cap { padding:6px 8px; color:#a0a0b0; font-size:11px; word-break:break-word; }
@@ -1881,7 +1882,8 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Original Thumbnail</button>
       <span id="baseCount" class="hint">No base thumbnail attached</span>
     </div>
-    <div class="hint">This is the source thumbnail to modify. It appears first in the preview area below.</div>
+    <div class="hint">This is the source thumbnail to modify. It appears in its own preview area here, above the prompt box.</div>
+    <div id="basePreview" class="base-preview-grid"></div>
   </div>
 
   <div class="card">
@@ -1898,7 +1900,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
     </div>
     <div class="hint">Use button attach and/or paste examples into the prompt. Both are included.</div>
 
-    <div id="attachmentsPreview" class="preview-grid"></div>
+    <div id="refsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
       <button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button>
@@ -1942,8 +1944,10 @@ function getPastedImageFiles(e) {
 }
 
 function renderAttachmentsPreview() {
-  const wrap = document.getElementById('attachmentsPreview');
-  wrap.innerHTML = '';
+  const baseWrap = document.getElementById('basePreview');
+  const refsWrap = document.getElementById('refsPreview');
+  baseWrap.innerHTML = '';
+  refsWrap.innerHTML = '';
   const attachCount = document.getElementById('attachCount');
   const baseCount = document.getElementById('baseCount');
 
@@ -1951,13 +1955,13 @@ function renderAttachmentsPreview() {
     const card = document.createElement('div');
     card.className = 'preview';
     card.innerHTML = '<img src="/image?path=' + encodeURIComponent(followUpBasePath) + '"><div class="cap">Base: selected from prior result</div>';
-    wrap.appendChild(card);
+    baseWrap.appendChild(card);
   } else if (baseAttachmentFile) {
     const url = URL.createObjectURL(baseAttachmentFile);
     const card = document.createElement('div');
     card.className = 'preview';
     card.innerHTML = '<img src="' + url + '"><div class="cap">Base (attached) — ' + esc(baseAttachmentFile.name || 'base_image.png') + '</div>';
-    wrap.appendChild(card);
+    baseWrap.appendChild(card);
   }
 
   pastedImages.forEach((f, idx) => {
@@ -1965,7 +1969,7 @@ function renderAttachmentsPreview() {
     const card = document.createElement('div');
     card.className = 'preview';
     card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (pasted) — ' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</div>';
-    wrap.appendChild(card);
+    refsWrap.appendChild(card);
   });
 
   attachedImages.forEach((f, idx) => {
@@ -1973,7 +1977,7 @@ function renderAttachmentsPreview() {
     const card = document.createElement('div');
     card.className = 'preview';
     card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (file) — ' + esc(f.name || ('attach_' + (idx + 1) + '.png')) + '</div>';
-    wrap.appendChild(card);
+    refsWrap.appendChild(card);
   });
 
   if (baseCount) {
