@@ -1846,6 +1846,9 @@ HTML_REVISION = r"""<!DOCTYPE html>
   * { box-sizing: border-box; }
   body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:#1a1a2e; color:#e0e0e0; margin:0; padding:24px; }
   .card { background:#16213e; border:1px solid #0f3460; border-radius:12px; padding:20px; margin-bottom:16px; }
+  .base-card { border-color:#2b5fb3; box-shadow: inset 0 0 0 1px rgba(43,95,179,.35); }
+  .refs-card { border-color:#0f3460; }
+  .section-kicker { font-size:11px; color:#8fb2ff; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; font-weight:700; }
   h1 { margin:0 0 8px; }
   .subtitle { color:#a0a0b0; margin-bottom:14px; }
   label { display:block; margin:10px 0 6px; color:#a0a0b0; font-size:13px; text-transform:uppercase; }
@@ -1874,8 +1877,9 @@ HTML_REVISION = r"""<!DOCTYPE html>
   <div class="subtitle">Upload one thumbnail + revision feedback. Runs 10 attempts in parallel, shows logs live, and supports follow-up revisions on any output.</div>
   <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
 
-  <div class="card">
-    <h3 style="margin-top:0;">1) Original Thumbnail (Top)</h3>
+  <div class="card base-card">
+    <div class="section-kicker">STEP 1</div>
+    <h3 style="margin-top:0;">Original Thumbnail (Lives Above Step 2)</h3>
     <label>Thumbnail to modify</label>
     <input type="file" id="baseFile" accept="image/*" style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -1883,11 +1887,13 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <span id="baseCount" class="hint">No base thumbnail attached</span>
     </div>
     <div class="hint">This is the source thumbnail to modify. It appears in its own preview area here, above the prompt box.</div>
+    <div class="hint" style="margin-top:10px; color:#8fb2ff;">Base Preview (only the original thumbnail appears here)</div>
     <div id="basePreview" class="base-preview-grid"></div>
   </div>
 
-  <div class="card">
-    <h3 style="margin-top:0;">2) Revision Prompt (Below)</h3>
+  <div class="card refs-card">
+    <div class="section-kicker">STEP 2</div>
+    <h3 style="margin-top:0;">Revision Prompt + Reference Examples (Below)</h3>
     <label>Prompt to adjust the thumbnail</label>
     <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
     <div class="hint">Paste examples into this box; pasted images are added as reference attachments.</div>
@@ -1900,6 +1906,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
     </div>
     <div class="hint">Use button attach and/or paste examples into the prompt. Both are included.</div>
 
+    <div class="hint" style="margin-top:10px;">Reference Preview (examples only — not the base image)</div>
     <div id="refsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
