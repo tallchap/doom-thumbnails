@@ -1874,17 +1874,21 @@ HTML_REVISION = r"""<!DOCTYPE html>
   <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
 
   <div class="card">
-    <label>Thumbnail to modify (attachment only)</label>
+    <h3 style="margin-top:0;">1) Original Thumbnail (Top)</h3>
+    <label>Thumbnail to modify</label>
     <input type="file" id="baseFile" accept="image/*" style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Base Thumbnail</button>
+      <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Original Thumbnail</button>
       <span id="baseCount" class="hint">No base thumbnail attached</span>
     </div>
-    <div class="hint">Attach one image as the thumbnail to modify. (Or use "Use as Base" from results.)</div>
+    <div class="hint">This is the source thumbnail to modify. It appears first in the preview area below.</div>
+  </div>
 
-    <label>Prompt to modify the thumbnail</label>
-    <textarea id="feedback" placeholder="Type revision instructions here. While cursor is in this box, paste (⌘V / Ctrl+V) images copied from Chrome; pasted images are added as reference attachments."></textarea>
-    <div class="hint">This prompt box stays as the instruction space. Pasted images here are treated as references.</div>
+  <div class="card">
+    <h3 style="margin-top:0;">2) Revision Prompt (Below)</h3>
+    <label>Prompt to adjust the thumbnail</label>
+    <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
+    <div class="hint">Paste examples into this box; pasted images are added as reference attachments.</div>
 
     <label>Reference attachments (optional)</label>
     <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
@@ -1892,7 +1896,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Reference Images</button>
       <span id="attachCount" class="hint">No reference files attached</span>
     </div>
-    <div class="hint">You can click the button or paste into the prompt textbox. Both are included as references.</div>
+    <div class="hint">Use button attach and/or paste examples into the prompt. Both are included.</div>
 
     <div id="attachmentsPreview" class="preview-grid"></div>
 
