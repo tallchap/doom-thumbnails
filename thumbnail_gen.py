@@ -1878,6 +1878,10 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <textarea id="feedback" placeholder="Type revision instructions here. While cursor is in this box, paste (⌘V / Ctrl+V) images copied from Chrome; pasted images are attached automatically."></textarea>
     <div class="hint">Single-input flow: type prompt + paste images in this same textbox. First pasted image is used as base thumbnail; additional pasted images are references. Tip: after first run, click "Use as Base" under any result for follow-up revisions.</div>
 
+    <label>Attach image files (optional, in addition to paste)</label>
+    <input type="file" id="attachFiles" accept="image/*" multiple>
+    <div class="hint">You can browse/select images here too. They are included with pasted images.</div>
+
     <div id="attachmentsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
@@ -1904,6 +1908,7 @@ let seen = new Set();
 let activeOutputDir = '';
 let followUpBasePath = '';
 let pastedImages = [];
+let attachedImages = [];
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -1938,7 +1943,23 @@ function renderAttachmentsPreview() {
     card.innerHTML = '<img src="' + url + '"><div class="cap">' + role + ' — ' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</div>';
     wrap.appendChild(card);
   });
+
+  attachedImages.forEach((f, idx) => {
+    const url = URL.createObjectURL(f);
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (file) — ' + esc(f.name || ('attach_' + (idx + 1) + '.png')) + '</div>';
+    wrap.appendChild(card);
+  });
 }
+
+document.getElementById('attachFiles').addEventListener('change', (e) => {
+  attachedImages = Array.from(e.target.files || []);
+  renderAttachmentsPreview();
+  if (attachedImages.length) {
+    document.getElementById('statusText').textContent = 'Attached ' + attachedImages.length + ' image file(s).';
+  }
+});
 
 document.getElementById('feedback').addEventListener('paste', (e) => {
   const pasted = getPastedImageFiles(e);
@@ -1951,6 +1972,9 @@ document.getElementById('feedback').addEventListener('paste', (e) => {
 
 function clearPastedImages() {
   pastedImages = [];
+  attachedImages = [];
+  const attachInput = document.getElementById('attachFiles');
+  if (attachInput) attachInput.value = '';
   renderAttachmentsPreview();
 }
 
@@ -1982,6 +2006,7 @@ async function runRevision() {
     fd.append('base_thumbnail', pastedImages[0], pastedImages[0].name || 'pasted_base.png');
     for (const f of pastedImages.slice(1)) fd.append('revision_images', f, f.name || 'pasted_ref.png');
   }
+  for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
 
   try {
