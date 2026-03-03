@@ -1879,8 +1879,12 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <div class="hint">Single-input flow: type prompt + paste images in this same textbox. First pasted image is used as base thumbnail; additional pasted images are references. Tip: after first run, click "Use as Base" under any result for follow-up revisions.</div>
 
     <label>Attach image files (optional, in addition to paste)</label>
-    <input type="file" id="attachFiles" accept="image/*" multiple>
-    <div class="hint">You can browse/select images here too. They are included with pasted images.</div>
+    <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Images</button>
+      <span id="attachCount" class="hint">No files attached</span>
+    </div>
+    <div class="hint">You can click the button or paste into the textbox. Both are included.</div>
 
     <div id="attachmentsPreview" class="preview-grid"></div>
 
@@ -1927,6 +1931,7 @@ function getPastedImageFiles(e) {
 function renderAttachmentsPreview() {
   const wrap = document.getElementById('attachmentsPreview');
   wrap.innerHTML = '';
+  const attachCount = document.getElementById('attachCount');
 
   if (followUpBasePath) {
     const card = document.createElement('div');
@@ -1951,6 +1956,16 @@ function renderAttachmentsPreview() {
     card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (file) — ' + esc(f.name || ('attach_' + (idx + 1) + '.png')) + '</div>';
     wrap.appendChild(card);
   });
+
+  if (attachCount) {
+    attachCount.textContent = attachedImages.length
+      ? (attachedImages.length + ' file(s) attached')
+      : 'No files attached';
+  }
+}
+
+function openAttachPicker() {
+  document.getElementById('attachFiles').click();
 }
 
 document.getElementById('attachFiles').addEventListener('change', (e) => {
@@ -2069,6 +2084,7 @@ function startPolling() {
   }, 1000);
 }
 
+renderAttachmentsPreview();
 startPolling();
 </script>
 </body>
