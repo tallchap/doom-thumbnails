@@ -1883,7 +1883,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
 </head>
 <body>
   <h1>Thumbnail Revision Page</h1>
-  <div class="subtitle">Upload one thumbnail + revision feedback. Runs 10 attempts in parallel, shows logs live, and supports follow-up revisions on any output.</div>
+  <div class="subtitle">Model: <strong>gemini-3.1-flash-image-preview</strong></div>
   <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
 
   <div class="card base-card">
