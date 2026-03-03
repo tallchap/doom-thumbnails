@@ -1874,24 +1874,32 @@ HTML_REVISION = r"""<!DOCTYPE html>
   <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
 
   <div class="card">
-    <label>Revision input (single textbox)</label>
-    <textarea id="feedback" placeholder="Type revision instructions here. While cursor is in this box, paste (⌘V / Ctrl+V) images copied from Chrome; pasted images are attached automatically."></textarea>
-    <div class="hint">Single-input flow: type prompt + paste images in this same textbox. First pasted image is used as base thumbnail; additional pasted images are references. Tip: after first run, click "Use as Base" under any result for follow-up revisions.</div>
+    <label>Thumbnail to modify (attachment only)</label>
+    <input type="file" id="baseFile" accept="image/*" style="display:none;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Base Thumbnail</button>
+      <span id="baseCount" class="hint">No base thumbnail attached</span>
+    </div>
+    <div class="hint">Attach one image as the thumbnail to modify. (Or use "Use as Base" from results.)</div>
 
-    <label>Attach image files (optional, in addition to paste)</label>
+    <label>Prompt to modify the thumbnail</label>
+    <textarea id="feedback" placeholder="Type revision instructions here. While cursor is in this box, paste (⌘V / Ctrl+V) images copied from Chrome; pasted images are added as reference attachments."></textarea>
+    <div class="hint">This prompt box stays as the instruction space. Pasted images here are treated as references.</div>
+
+    <label>Reference attachments (optional)</label>
     <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Images</button>
-      <span id="attachCount" class="hint">No files attached</span>
+      <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Reference Images</button>
+      <span id="attachCount" class="hint">No reference files attached</span>
     </div>
-    <div class="hint">You can click the button or paste into the textbox. Both are included.</div>
+    <div class="hint">You can click the button or paste into the prompt textbox. Both are included as references.</div>
 
     <div id="attachmentsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
       <button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button>
       <button id="clearFollowupBtn" class="btn" style="background:#0f3460;" onclick="clearFollowUpBase()">Clear Follow-up Base</button>
-      <button id="clearPastedBtn" class="btn" style="background:#0f3460;" onclick="clearPastedImages()">Clear Pasted Images</button>
+      <button id="clearPastedBtn" class="btn" style="background:#0f3460;" onclick="clearAttachments()">Clear Attachments</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -1911,6 +1919,7 @@ let pollInterval = null;
 let seen = new Set();
 let activeOutputDir = '';
 let followUpBasePath = '';
+let baseAttachmentFile = null;
 let pastedImages = [];
 let attachedImages = [];
 
@@ -1932,11 +1941,18 @@ function renderAttachmentsPreview() {
   const wrap = document.getElementById('attachmentsPreview');
   wrap.innerHTML = '';
   const attachCount = document.getElementById('attachCount');
+  const baseCount = document.getElementById('baseCount');
 
   if (followUpBasePath) {
     const card = document.createElement('div');
     card.className = 'preview';
     card.innerHTML = '<img src="/image?path=' + encodeURIComponent(followUpBasePath) + '"><div class="cap">Base: selected from prior result</div>';
+    wrap.appendChild(card);
+  } else if (baseAttachmentFile) {
+    const url = URL.createObjectURL(baseAttachmentFile);
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="' + url + '"><div class="cap">Base (attached) — ' + esc(baseAttachmentFile.name || 'base_image.png') + '</div>';
     wrap.appendChild(card);
   }
 
@@ -1944,8 +1960,7 @@ function renderAttachmentsPreview() {
     const url = URL.createObjectURL(f);
     const card = document.createElement('div');
     card.className = 'preview';
-    const role = (!followUpBasePath && idx === 0) ? 'Base (from paste)' : 'Reference';
-    card.innerHTML = '<img src="' + url + '"><div class="cap">' + role + ' — ' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</div>';
+    card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (pasted) — ' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</div>';
     wrap.appendChild(card);
   });
 
@@ -1957,22 +1972,42 @@ function renderAttachmentsPreview() {
     wrap.appendChild(card);
   });
 
-  if (attachCount) {
-    attachCount.textContent = attachedImages.length
-      ? (attachedImages.length + ' file(s) attached')
-      : 'No files attached';
+  if (baseCount) {
+    baseCount.textContent = followUpBasePath
+      ? 'Using follow-up base from results'
+      : (baseAttachmentFile ? '1 base thumbnail attached' : 'No base thumbnail attached');
   }
+  if (attachCount) {
+    const totalRefs = attachedImages.length + pastedImages.length;
+    attachCount.textContent = totalRefs
+      ? (totalRefs + ' reference image(s) attached')
+      : 'No reference files attached';
+  }
+}
+
+function openBasePicker() {
+  document.getElementById('baseFile').click();
 }
 
 function openAttachPicker() {
   document.getElementById('attachFiles').click();
 }
 
+document.getElementById('baseFile').addEventListener('change', (e) => {
+  const files = Array.from(e.target.files || []);
+  baseAttachmentFile = files.length ? files[0] : null;
+  if (baseAttachmentFile) followUpBasePath = '';
+  renderAttachmentsPreview();
+  if (baseAttachmentFile) {
+    document.getElementById('statusText').textContent = 'Base thumbnail attached.';
+  }
+});
+
 document.getElementById('attachFiles').addEventListener('change', (e) => {
   attachedImages = Array.from(e.target.files || []);
   renderAttachmentsPreview();
   if (attachedImages.length) {
-    document.getElementById('statusText').textContent = 'Attached ' + attachedImages.length + ' image file(s).';
+    document.getElementById('statusText').textContent = 'Attached ' + attachedImages.length + ' reference image file(s).';
   }
 });
 
@@ -1982,14 +2017,17 @@ document.getElementById('feedback').addEventListener('paste', (e) => {
   e.preventDefault();
   pastedImages = pastedImages.concat(pasted);
   renderAttachmentsPreview();
-  document.getElementById('statusText').textContent = 'Attached ' + pasted.length + ' pasted image(s) from clipboard.';
+  document.getElementById('statusText').textContent = 'Attached ' + pasted.length + ' pasted reference image(s) from clipboard.';
 });
 
-function clearPastedImages() {
+function clearAttachments() {
   pastedImages = [];
   attachedImages = [];
+  baseAttachmentFile = null;
   const attachInput = document.getElementById('attachFiles');
+  const baseInput = document.getElementById('baseFile');
   if (attachInput) attachInput.value = '';
+  if (baseInput) baseInput.value = '';
   renderAttachmentsPreview();
 }
 
@@ -2002,9 +2040,9 @@ async function runRevision() {
   const feedback = document.getElementById('feedback').value.trim();
   if (!feedback) { alert('Enter revision feedback.'); return; }
 
-  const hasBaseFromPaste = !followUpBasePath && pastedImages.length > 0;
-  if (!followUpBasePath && !hasBaseFromPaste) {
-    alert('Paste at least one image into the textbox (or choose "Use as Base" from a prior result).');
+  const hasBaseAttachment = !!baseAttachmentFile;
+  if (!followUpBasePath && !hasBaseAttachment) {
+    alert('Attach a base thumbnail (or choose "Use as Base" from a prior result).');
     return;
   }
 
@@ -2016,11 +2054,10 @@ async function runRevision() {
   const fd = new FormData();
   if (followUpBasePath) {
     fd.append('base_path', followUpBasePath);
-    for (const f of pastedImages) fd.append('revision_images', f, f.name || 'pasted_ref.png');
   } else {
-    fd.append('base_thumbnail', pastedImages[0], pastedImages[0].name || 'pasted_base.png');
-    for (const f of pastedImages.slice(1)) fd.append('revision_images', f, f.name || 'pasted_ref.png');
+    fd.append('base_thumbnail', baseAttachmentFile, baseAttachmentFile.name || 'attached_base.png');
   }
+  for (const f of pastedImages) fd.append('revision_images', f, f.name || 'pasted_ref.png');
   for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
 
@@ -2055,6 +2092,9 @@ function addImageCard(img) {
 
 function setFollowUpBase(encodedPath) {
   followUpBasePath = decodeURIComponent(encodedPath);
+  baseAttachmentFile = null;
+  const baseInput = document.getElementById('baseFile');
+  if (baseInput) baseInput.value = '';
   renderAttachmentsPreview();
   document.getElementById('statusText').textContent = 'Follow-up base selected. Enter feedback and run again.';
 }
