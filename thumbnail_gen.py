@@ -1870,7 +1870,9 @@ HTML_REVISION = r"""<!DOCTYPE html>
   .base-preview-grid { display:grid; grid-template-columns:minmax(260px, 420px); gap:10px; margin-top:10px; }
   .preview { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
   .preview img { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; }
-  .preview .cap { padding:6px 8px; color:#a0a0b0; font-size:11px; word-break:break-word; }
+  .preview .cap { padding:6px 8px; color:#a0a0b0; font-size:11px; word-break:break-word; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .xbtn { border:none; background:#263b6a; color:#fff; border-radius:999px; width:20px; height:20px; line-height:20px; font-size:12px; cursor:pointer; padding:0; }
+  .xbtn:hover { background:#e94560; }
   .btn-sm { font-size:11px; padding:6px 8px; }
   .logs { background:#0d1b3e; border:1px solid #0f3460; border-radius:8px; padding:10px; min-height:130px; max-height:240px; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
   .log-line { margin-bottom:4px; color:#b8c0d8; }
@@ -1883,7 +1885,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
 
   <div class="card base-card">
     <div class="section-kicker">STEP 1</div>
-    <h3 style="margin-top:0;">Original Thumbnail (Lives Above Step 2)</h3>
+    <h3 style="margin-top:0;">Original Thumbnail</h3>
     <label>Thumbnail to modify</label>
     <input type="file" id="baseFile" accept="image/*" style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -1898,7 +1900,6 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <h3 style="margin-top:0;">Revision Prompt + Reference Examples (Below)</h3>
     <label>Prompt to adjust the thumbnail</label>
     <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
-    <div class="hint">Paste examples into this box; pasted images are added as reference attachments.</div>
 
     <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
@@ -1907,10 +1908,10 @@ HTML_REVISION = r"""<!DOCTYPE html>
     </div>
     <div id="refsPreview" class="preview-grid"></div>
 
-    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
-      <button id="runBtn" class="btn" onclick="runRevision()">Generate 10 Revision Attempts</button>
-      <button id="clearFollowupBtn" class="btn" style="background:#0f3460;" onclick="clearFollowUpBase()">Clear Follow-up Base</button>
-      <button id="clearPastedBtn" class="btn" style="background:#0f3460;" onclick="clearAttachments()">Clear Attachments</button>
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="genCount" class="hint" style="margin:0;">Count</label>
+      <input id="genCount" type="number" min="1" max="50" value="10" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
+      <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -1959,13 +1960,13 @@ function renderAttachmentsPreview() {
   if (followUpBasePath) {
     const card = document.createElement('div');
     card.className = 'preview';
-    card.innerHTML = '<img src="/image?path=' + encodeURIComponent(followUpBasePath) + '"><div class="cap">Base: selected from prior result</div>';
+    card.innerHTML = '<img src="/image?path=' + encodeURIComponent(followUpBasePath) + '"><div class="cap"><span>Base image</span><button class="xbtn" onclick="removeBaseImage()">×</button></div>';
     baseWrap.appendChild(card);
   } else if (baseAttachmentFile) {
     const url = URL.createObjectURL(baseAttachmentFile);
     const card = document.createElement('div');
     card.className = 'preview';
-    card.innerHTML = '<img src="' + url + '"><div class="cap">Base (attached) — ' + esc(baseAttachmentFile.name || 'base_image.png') + '</div>';
+    card.innerHTML = '<img src="' + url + '"><div class="cap"><span>' + esc(baseAttachmentFile.name || 'base_image.png') + '</span><button class="xbtn" onclick="removeBaseImage()">×</button></div>';
     baseWrap.appendChild(card);
   }
 
@@ -1973,7 +1974,7 @@ function renderAttachmentsPreview() {
     const url = URL.createObjectURL(f);
     const card = document.createElement('div');
     card.className = 'preview';
-    card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (pasted) — ' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</div>';
+    card.innerHTML = '<img src="' + url + '"><div class="cap"><span>' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</span><button class="xbtn" onclick="removePastedRef(' + idx + ')">×</button></div>';
     refsWrap.appendChild(card);
   });
 
@@ -1981,14 +1982,12 @@ function renderAttachmentsPreview() {
     const url = URL.createObjectURL(f);
     const card = document.createElement('div');
     card.className = 'preview';
-    card.innerHTML = '<img src="' + url + '"><div class="cap">Reference (file) — ' + esc(f.name || ('attach_' + (idx + 1) + '.png')) + '</div>';
+    card.innerHTML = '<img src="' + url + '"><div class="cap"><span>' + esc(f.name || ('attach_' + (idx + 1) + '.png')) + '</span><button class="xbtn" onclick="removeAttachedRef(' + idx + ')">×</button></div>';
     refsWrap.appendChild(card);
   });
 
   if (baseCount) {
-    baseCount.textContent = followUpBasePath
-      ? 'Using follow-up base'
-      : (baseAttachmentFile ? 'Base attached' : '');
+    baseCount.textContent = '';
   }
   if (attachCount) {
     const totalRefs = attachedImages.length + pastedImages.length;
@@ -2002,6 +2001,24 @@ function openBasePicker() {
 
 function openAttachPicker() {
   document.getElementById('attachFiles').click();
+}
+
+function removeBaseImage() {
+  followUpBasePath = '';
+  baseAttachmentFile = null;
+  const baseInput = document.getElementById('baseFile');
+  if (baseInput) baseInput.value = '';
+  renderAttachmentsPreview();
+}
+
+function removePastedRef(idx) {
+  pastedImages.splice(idx, 1);
+  renderAttachmentsPreview();
+}
+
+function removeAttachedRef(idx) {
+  attachedImages.splice(idx, 1);
+  renderAttachmentsPreview();
 }
 
 document.getElementById('baseFile').addEventListener('change', (e) => {
@@ -2057,6 +2074,9 @@ async function runRevision() {
     return;
   }
 
+  const countInput = document.getElementById('genCount');
+  const requestedCount = Math.max(1, Math.min(50, parseInt((countInput && countInput.value) || '10', 10) || 10));
+
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
   btn.textContent = 'Starting...';
@@ -2071,19 +2091,20 @@ async function runRevision() {
   for (const f of pastedImages) fd.append('revision_images', f, f.name || 'pasted_ref.png');
   for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
+  fd.append('count', String(requestedCount));
 
   try {
     const resp = await fetch('/revise_upload', { method:'POST', body: fd });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
     activeOutputDir = data.output_dir || '';
-    document.getElementById('statusText').textContent = 'Running 10 parallel attempts...';
+    document.getElementById('statusText').textContent = 'Running ' + requestedCount + ' parallel attempts...';
     startPolling();
   } catch (e) {
     alert('Error: ' + e);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Generate 10 Revision Attempts';
+    btn.textContent = 'Generate';
   }
 }
 
@@ -2607,6 +2628,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         prompt = fields.get("prompt", "").strip()
         base_files = files.get("base_thumbnail", [])
         base_path = fields.get("base_path", "").strip()
+        try:
+            count = int(fields.get("count", "10"))
+        except Exception:
+            count = 10
+        count = max(1, min(50, count))
 
         if not prompt:
             self._json_response({"error": "Revision prompt is required"})
@@ -2651,7 +2677,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             [base_img],
             status.get("speakers", []),
             prompt,
-            count_per=10,
+            count_per=count,
             idea_idx=revision_idea_idx,
             attachment_refs=attachment_refs if attachment_refs else None,
         )
@@ -2662,6 +2688,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             status["log"].append(f"Revision base: {base_src}")
             status["log"].append(f"Prompt: {prompt[:180]}")
             status["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
+            status["log"].append(f"Requested attempts: {count}")
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
