@@ -69,6 +69,7 @@ Key brand traits:
 - Large bold headline text in white or yellow, dramatic and punchy
 - Guest/host photos with intense, exaggerated expressions (shock, concern, confrontation)
 - Composite imagery — people combined with dramatic AI/apocalyptic visuals
+- Avoid cliché AI iconography: NO microchips/chipsets/circuit-board "AI" icons or chip-with-AI symbols
 - Overall feel: high-stakes, provocative, debate energy
 - Color palette: deep reds, blacks, whites, with yellow accents for emphasis"""
 
@@ -85,7 +86,7 @@ Each idea should be a short, vivid visual description (1-2 sentences) that would
 {additional_instructions}
 
 Return as a JSON array of exactly 10 strings. Example:
-["Doomsday clock at 11:59 with a terminator looming behind Liron, headline: TIMES UP", "Split screen of human brain vs AI chip, both glowing red, headline: WHO WINS?"]"""
+["Doomsday clock at 11:59 with a terminator looming behind Liron, headline: TIMES UP", "Split screen of human brain vs courtroom gavel, both glowing red, headline: WHO DECIDES?"]"""
 
 SEARCH_QUERY_PROMPT = """Given this episode info, suggest 3-5 image search queries to find useful source images for a YouTube thumbnail. Return as a JSON array of strings.
 
@@ -121,6 +122,7 @@ RULES:
 - High contrast, clean composition, one focal point
 - PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are: (1) Liron Shapira if his reference photos are attached — his face MUST faithfully match those reference photos, (2) the episode guest if speaker photos are attached. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
 - Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
+- DO NOT include AI chip/microchip/circuit-board iconography (including a square chip with "AI" text or similar symbols).
 
 Variation #{variation_seed} — make this meaningfully different from other variations."""
 
@@ -130,6 +132,7 @@ REVISION INSTRUCTIONS: {custom_prompt}
 
 Keep the core composition but apply the requested changes.
 Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one short headline, nothing else.
+Do NOT introduce AI chip/microchip/circuit-board iconography (including a square chip with "AI" text).
 TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in quotes (single or double), preserve that quoted text EXACTLY as written — same words, order, punctuation, apostrophes, and capitalization. Do NOT paraphrase, normalize, or substitute synonyms for quoted text.
 {speaker_section}
 - The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
@@ -144,6 +147,7 @@ Keep the same general composition, mood, and subject, but vary:
 
 The variation should feel like a sibling of the original, not a copy.
 Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one short headline, nothing else.
+Do NOT introduce AI chip/microchip/circuit-board iconography (including a square chip with "AI" text).
 {speaker_section}
 - The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
 
