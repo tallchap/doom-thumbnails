@@ -1923,12 +1923,12 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
     </div>
     <div id="statusText" class="status"></div>
-    <div id="costText" class="costline"></div>
   </div>
 
   <div class="card">
     <h3 style="margin-top:0;">Live Logs</h3>
     <div id="logBox" class="logs"></div>
+    <div id="costText" class="costline"></div>
   </div>
 
   <div class="card">
