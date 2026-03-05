@@ -97,6 +97,20 @@ EPISODE TITLE: {title}
 Focus on: guest headshots, topic-relevant imagery (logos, icons, dramatic visuals), anything that could be composited into a thumbnail.
 Example: ["Daniel Kokotajlo headshot", "doomsday clock icon", "AI robot dramatic red lighting"]"""
 
+EXISTING_DESCRIPTIONS_TONE_REFERENCE = """EXISTING DESCRIPTIONS AND TITLES FOR TONE REFERENCE
+TITLE: Episode 133 — Elon Musk's Insane Plan for Surviving AI Takeover (Feb 14, 2026)
+DESCRIPTION: Elon Musk just made a stunning admission about the insane future he's steering us toward. In a new interview with Dwarkesh Patel and John Collison on the Cheeky Pint podcast, Elon said that humanity can't expect to be "in charge" of AI for long, because humans will soon only have 1% of the combined total human+AI intelligence. Then, he claimed to have a plan to build AI overlords that will naturally support humanity's flourishing. In this mini episode, I react to Elon's remarks and expose why his plan for humanity's survival in the age of AI is dangerously flimsy.
+TITLE: Episode 132 — The Only Politician Thinking Clearly About Superintelligence — California Governor Candidate Zoltan Istvan (Feb 13, 2026)
+DESCRIPTION: California gubernatorial candidate Zoltan Istvan reveals his P(Doom) and makes the case for universal basic income and radical life extension.
+TITLE: Episode 131 — His P(Doom) Is Only 2.6% — AI Doom Debate with Bentham's Bulldog, a.k.a. Matthew Adelstein (Feb 10, 2026)
+DESCRIPTION: Get ready for a rematch with the one & only Bentham's Bulldog, a.k.a. Matthew Adelstein! Our first debate covered a wide range of philosophical topics. Today's Debate #2 is all about Matthew's new argument against the inevitability of AI doom. He comes out swinging with a calculated P(Doom) of just 2.6%, based on a multi-step probability chain that I challenge as potentially falling into a "Type 2 Conjunction Fallacy" (a.k.a. Multiple Stage Fallacy). We clash on whether to expect "alignment by default" and the nature of future AI architectures. While Matthew sees current RLHF success as evidence that AIs will likely remain compliant, I argue that we're building "Goal Engines" — superhuman optimization modules that act like nuclear cores wrapped in friendly personalities. We debate whether these engines can be safely contained, or if the capability to map goals to actions is inherently dangerous and prone to exfiltration. Despite our different forecasts (my 50% vs his sub-10%), we actually land in the "sane zone" together on some key policy ideas, like the potential necessity of a global pause. While Matthew's case for low P(Doom) hasn't convinced me, I consider his post and his engagement with me to be super high quality and good faith. We're not here to score points, we just want to better predict how the intelligence explosion will play out.
+TITLE: Episode 130 — What Dario Amodei Misses In "The Adolescence of Technology" — Reaction With MIRI's Harlan Stewart (Feb 4, 2026)
+DESCRIPTION: Harlan Stewart works in communications for the Machine Intelligence Research Institute (MIRI). In this episode, Harlan and I give our honest opinions on Dario Amodei's new essay "The Adolescence of Technology".
+TITLE: Episode 129 — Q&A: Is Liron too DISMISSIVE of AI Harms? + New Studio, Demis Would #PauseAI, AI Water Use Debate (Jan 27, 2026)
+DESCRIPTION: Check out the new Doom Debates studio in this Q&A with special guest Producer Ori! Liron gets into a heated discussion about whether doomers must validate short-term risks, like data center water usage, in order to build a successful political coalition. Originally streamed on Saturday, January 24.
+TITLE: Episode 128 — Taiwan's Cyber Ambassador-At-Large Says Humans & AI Can FOOM Together (Jan 20, 2026)
+DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she's working to align AI with democratic principles as Taiwan's Cyber Ambassador. In this debate, I probe her P(doom) and stress-test her vision for safe AI development."""
+
 DESCRIPTION_ARCHIVE_PROMPT = """YouTube Description Creation Prompt
 Your job is to act as a YouTube strategist for an AI-focused channel. After reading the full video transcript, produce two distinct outputs:
 
@@ -463,11 +477,15 @@ def generate_search_queries(client, title, custom_prompt):
 
 def generate_descriptions(client, primary_description, transcript, channel_samples, guidebook_excerpt):
     """Generate iterated YouTube description candidates."""
+    merged_samples = EXISTING_DESCRIPTIONS_TONE_REFERENCE
+    if channel_samples:
+        merged_samples = f"{merged_samples}\n\nADDITIONAL USER-PROVIDED CHANNEL SAMPLES:\n{channel_samples}"
+
     prompt = (
         f"{DESCRIPTION_ARCHIVE_PROMPT}\n\n"
         f"PRIMARY DESCRIPTION (existing draft):\n{primary_description}\n\n"
         f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
-        f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{channel_samples}\n\n"
+        f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n\n"
         f"PRESENTATION & MESSAGING GUIDEBOOK EXCERPT:\n{guidebook_excerpt}\n"
     )
     _record_api_call(TEXT_MODEL, prompt, phase="description_generation")
@@ -2435,7 +2453,19 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
 
   <div class="card">
     <h3 style="margin-top:0;">Channel Samples</h3>
-    <textarea id="samples" placeholder="Paste example channel descriptions/tone samples"></textarea>
+    <textarea id="samples" placeholder="Paste example channel descriptions/tone samples">EXISTING DESCRIPTIONS AND TITLES FOR TONE REFERENCE
+TITLE: Episode 133 — Elon Musk's Insane Plan for Surviving AI Takeover (Feb 14, 2026)
+DESCRIPTION: Elon Musk just made a stunning admission about the insane future he's steering us toward. In a new interview with Dwarkesh Patel and John Collison on the Cheeky Pint podcast, Elon said that humanity can't expect to be "in charge" of AI for long, because humans will soon only have 1% of the combined total human+AI intelligence. Then, he claimed to have a plan to build AI overlords that will naturally support humanity's flourishing. In this mini episode, I react to Elon's remarks and expose why his plan for humanity's survival in the age of AI is dangerously flimsy.
+TITLE: Episode 132 — The Only Politician Thinking Clearly About Superintelligence — California Governor Candidate Zoltan Istvan (Feb 13, 2026)
+DESCRIPTION: California gubernatorial candidate Zoltan Istvan reveals his P(Doom) and makes the case for universal basic income and radical life extension.
+TITLE: Episode 131 — His P(Doom) Is Only 2.6% — AI Doom Debate with Bentham's Bulldog, a.k.a. Matthew Adelstein (Feb 10, 2026)
+DESCRIPTION: Get ready for a rematch with the one & only Bentham's Bulldog, a.k.a. Matthew Adelstein! Our first debate covered a wide range of philosophical topics. Today's Debate #2 is all about Matthew's new argument against the inevitability of AI doom. He comes out swinging with a calculated P(Doom) of just 2.6%, based on a multi-step probability chain that I challenge as potentially falling into a "Type 2 Conjunction Fallacy" (a.k.a. Multiple Stage Fallacy). We clash on whether to expect "alignment by default" and the nature of future AI architectures. While Matthew sees current RLHF success as evidence that AIs will likely remain compliant, I argue that we're building "Goal Engines" — superhuman optimization modules that act like nuclear cores wrapped in friendly personalities. We debate whether these engines can be safely contained, or if the capability to map goals to actions is inherently dangerous and prone to exfiltration. Despite our different forecasts (my 50% vs his sub-10%), we actually land in the "sane zone" together on some key policy ideas, like the potential necessity of a global pause. While Matthew's case for low P(Doom) hasn't convinced me, I consider his post and his engagement with me to be super high quality and good faith. We're not here to score points, we just want to better predict how the intelligence explosion will play out.
+TITLE: Episode 130 — What Dario Amodei Misses In "The Adolescence of Technology" — Reaction With MIRI's Harlan Stewart (Feb 4, 2026)
+DESCRIPTION: Harlan Stewart works in communications for the Machine Intelligence Research Institute (MIRI). In this episode, Harlan and I give our honest opinions on Dario Amodei's new essay "The Adolescence of Technology".
+TITLE: Episode 129 — Q&A: Is Liron too DISMISSIVE of AI Harms? + New Studio, Demis Would #PauseAI, AI Water Use Debate (Jan 27, 2026)
+DESCRIPTION: Check out the new Doom Debates studio in this Q&A with special guest Producer Ori! Liron gets into a heated discussion about whether doomers must validate short-term risks, like data center water usage, in order to build a successful political coalition. Originally streamed on Saturday, January 24.
+TITLE: Episode 128 — Taiwan's Cyber Ambassador-At-Large Says Humans & AI Can FOOM Together (Jan 20, 2026)
+DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she's working to align AI with democratic principles as Taiwan's Cyber Ambassador. In this debate, I probe her P(doom) and stress-test her vision for safe AI development.</textarea>
   </div>
 
   <div class="card">
