@@ -112,50 +112,25 @@ DESCRIPTION: Check out the new Doom Debates studio in this Q&A with special gues
 TITLE: Episode 128 — Taiwan's Cyber Ambassador-At-Large Says Humans & AI Can FOOM Together (Jan 20, 2026)
 DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she's working to align AI with democratic principles as Taiwan's Cyber Ambassador. In this debate, I probe her P(doom) and stress-test her vision for safe AI development."""
 
-DESCRIPTION_ARCHIVE_PROMPT = """YouTube Description Creation Prompt
-Your job is to act as a YouTube strategist for an AI-focused channel. After reading the full video transcript, produce two distinct outputs:
+DESCRIPTION_ARCHIVE_PROMPT = """YouTube Description Revision Prompt
+You are revising ONE YouTube description for an AI-focused channel.
 
-Output A – Description Candidates 1-3
-Three distinct YouTube video descriptions.
-Each description should include:
-- A short label classifying the description (e.g. "The Provocation," "The Explainer," "The Stakes Play").
-- A strong opening hook (first 2-3 lines visible before "Show more") that sells the click and watch-through.
-- A body section that expands on the video's argument, key claims, or story beats — written to boost search and watch time, not just summarize.
-- A tone that matches the existing channel samples provided.
+Goal:
+- Produce exactly ONE revised description per run.
+- Prioritize the HOW TO REVISE instructions over everything else.
+- Keep the revised result faithful to transcript facts.
 
-Output B – Candidate 4 (Messaging-Exercise Edition)
-Provide:
-1) Audience Definition
-2) Objective (one clear, realistic sentence beginning with an action verb)
-3) Core Message (<= 1 minute "bumper-sticker" answer)
-4) Storyline (bullet outline of the narrative arc)
-5) Finally, based on that foundation, write the full Description for Candidate 4.
-
-Think: "If the title + thumbnail got them to click, the description's job is to confirm they're in the right place AND feed the algorithm."
-Return everything in Markdown using this exact template:
-Description Candidate 1 — "[Label]"
+Output format (strict):
 Description:
-[full description text here]
-Description Candidate 2 — "[Label]"
-Description:
-...
-Description Candidate 3 — "[Label]"
-Description:
-...
-
-Candidate 4 – Messaging-Exercise Edition
-Audience: ... Objective: ... Message: ... Storyline:
-- ...
-- ...
-Description:
-...
+[one full revised description only]
 
 RULES
-- Accuracy first: do not invent facts; represent the transcript faithfully.
-- Voice & vibe: match the tone of the existing channel samples — dramatic, high-contrast, slightly irreverent.
-- If the transcript does NOT cover a point, don't promise it in the description.
-- Front-load searchable keywords naturally — don't keyword-stuff.
-- Keep descriptions between 800-1,500 characters (above + below the fold combined) unless the video warrants longer."""
+- Accuracy first: do not invent facts; represent transcript faithfully.
+- Voice & vibe: match existing channel samples — dramatic, high-contrast, slightly irreverent.
+- If transcript does NOT cover a point, do not promise it.
+- Front-load searchable keywords naturally; no keyword stuffing.
+- Keep description between 800-1,500 characters unless content strongly warrants longer.
+- Return ONLY one revised description, not multiple candidates."""
 
 IDEA_THUMBNAIL_PROMPT = """Generate a YouTube thumbnail image.
 
@@ -476,8 +451,8 @@ def generate_search_queries(client, title, custom_prompt):
     return _parse_json_array(text)
 
 
-def generate_descriptions(client, title, primary_description, transcript, channel_samples):
-    """Generate iterated YouTube description candidates."""
+def generate_descriptions(client, title, primary_description, revise_instructions, transcript, channel_samples):
+    """Generate one revised YouTube description."""
     merged_samples = EXISTING_DESCRIPTIONS_TONE_REFERENCE
     if channel_samples:
         merged_samples = f"{merged_samples}\n\nADDITIONAL USER-PROVIDED CHANNEL SAMPLES:\n{channel_samples}"
@@ -486,6 +461,7 @@ def generate_descriptions(client, title, primary_description, transcript, channe
     prompt = (
         f"{DESCRIPTION_ARCHIVE_PROMPT}\n\n"
         f"{title_block}"
+        f"HOW TO REVISE (highest priority):\n{revise_instructions}\n\n"
         f"PRIMARY DESCRIPTION (existing draft):\n{primary_description}\n\n"
         f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
         f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n"
@@ -2465,6 +2441,11 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h3 style="margin-top:0;">How to revise (main instruction)</h3>
+    <textarea id="revise" placeholder="Describe exactly how to revise the base description. This is the highest-priority instruction."></textarea>
+  </div>
+
+  <div class="card">
     <h3 style="margin-top:0;">Channel Samples</h3>
     <textarea id="samples" placeholder="Paste example channel descriptions/tone samples">EXISTING DESCRIPTIONS AND TITLES FOR TONE REFERENCE
 TITLE: Episode 133 — Elon Musk's Insane Plan for Surviving AI Takeover (Feb 14, 2026)
@@ -2588,10 +2569,12 @@ async function generateDescriptions() {
   const status = document.getElementById('status');
   const title = document.getElementById('title').value.trim();
   const primary = document.getElementById('primary').value.trim();
+  const revise = document.getElementById('revise').value.trim();
   const transcript = document.getElementById('transcript').value.trim();
   const samples = document.getElementById('samples').value.trim();
   const count = 3;
   if (!primary) { alert('Primary description is required.'); return; }
+  if (!revise) { alert('How to revise is required.'); return; }
   if (!transcript) { alert('Transcript is required.'); return; }
 
   btn.disabled = true;
@@ -2602,6 +2585,7 @@ async function generateDescriptions() {
     const fd = new FormData();
     fd.append('title', title);
     fd.append('primary_description', primary);
+    fd.append('revise_instructions', revise);
     fd.append('transcript', transcript);
     fd.append('channel_samples', samples);
     fd.append('count', String(count));
@@ -2915,6 +2899,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         title = fields.get("title", "").strip()
         primary_description = fields.get("primary_description", "").strip()
+        revise_instructions = fields.get("revise_instructions", "").strip()
         transcript = fields.get("transcript", "").strip()
         channel_samples = fields.get("channel_samples", "").strip()
         count_raw = fields.get("count", "1").strip()
@@ -2927,13 +2912,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not primary_description:
             self._json_response({"error": "Primary description is required"})
             return
+        if not revise_instructions:
+            self._json_response({"error": "How to revise is required"})
+            return
         if not transcript:
             self._json_response({"error": "Transcript is required"})
             return
 
         try:
             client = get_client()
-            in_chars = len(title) + len(primary_description) + len(transcript) + len(channel_samples)
+            in_chars = len(title) + len(primary_description) + len(revise_instructions) + len(transcript) + len(channel_samples)
             outputs = []
             with status_lock:
                 status["running"] = True
@@ -2944,7 +2932,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for i in range(count):
                 with status_lock:
                     status["log"].append(f"Description run {i+1}/{count} started")
-                output = generate_descriptions(client, title, primary_description, transcript, channel_samples)
+                output = generate_descriptions(client, title, primary_description, revise_instructions, transcript, channel_samples)
                 outputs.append(f"## Generation {i+1}\n\n{output}")
                 out_chars = len(output or "")
                 with status_lock:
