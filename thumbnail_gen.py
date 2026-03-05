@@ -111,18 +111,6 @@ DESCRIPTION: Check out the new Doom Debates studio in this Q&A with special gues
 TITLE: Episode 128 — Taiwan's Cyber Ambassador-At-Large Says Humans & AI Can FOOM Together (Jan 20, 2026)
 DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she's working to align AI with democratic principles as Taiwan's Cyber Ambassador. In this debate, I probe her P(doom) and stress-test her vision for safe AI development."""
 
-GUIDEBOOK_EXCERPT_DEFAULT = """PRESENTATION & MESSAGING GUIDEBOOK EXCERPT
-DETERMINE YOUR MESSAGE
-Let's say for the moment that your client invites you to give a presentation to the executive committee on the project you've been working on for the past 6 months. In the process of discussing the details, the client realizes that this is an important meeting and allots 4 hours for your presentation. You proceed to put together 4 hours' worth of presentation.
-If you had only 1 minute of your time and had to summarize everything, THAT'S YOUR MESSAGE.
-It doesn't matter how complex your presentation is; there's nothing that can't be summarized in 30 seconds to a minute when you have to. Determining your message calls for a bumper sticker mentality.
-Write your message down and keep it in a prominent place as you move to develop the story line of the presentation.
-
-CRAFT THE STORY LINE
-Once you have surfaced your conclusions, begin with your recommendation (the message) and use the remaining time to explain why it's the best answer.
-Put your conclusions first so the audience can evaluate the evidence as they hear it.
-The audience should be an active participant in reasoning, not passive recipients of facts."""
-
 DESCRIPTION_ARCHIVE_PROMPT = """YouTube Description Creation Prompt
 Your job is to act as a YouTube strategist for an AI-focused channel. After reading the full video transcript, produce two distinct outputs:
 
@@ -135,9 +123,7 @@ Each description should include:
 - A tone that matches the existing channel samples provided.
 
 Output B – Candidate 4 (Messaging-Exercise Edition)
-First, demonstrate you've read the Presentation & Messaging Guidebook excerpt by explicitly writing:
-"Guidebook read and understood."
-Then, following the guidebook's steps, provide:
+Provide:
 1) Audience Definition
 2) Objective (one clear, realistic sentence beginning with an action verb)
 3) Core Message (<= 1 minute "bumper-sticker" answer)
@@ -157,7 +143,6 @@ Description:
 ...
 
 Candidate 4 – Messaging-Exercise Edition
-Guidebook read and understood.
 Audience: ... Objective: ... Message: ... Storyline:
 - ...
 - ...
@@ -490,22 +475,17 @@ def generate_search_queries(client, title, custom_prompt):
     return _parse_json_array(text)
 
 
-def generate_descriptions(client, primary_description, transcript, channel_samples, guidebook_excerpt):
+def generate_descriptions(client, primary_description, transcript, channel_samples):
     """Generate iterated YouTube description candidates."""
     merged_samples = EXISTING_DESCRIPTIONS_TONE_REFERENCE
     if channel_samples:
         merged_samples = f"{merged_samples}\n\nADDITIONAL USER-PROVIDED CHANNEL SAMPLES:\n{channel_samples}"
 
-    effective_guidebook = guidebook_excerpt.strip() if guidebook_excerpt else ""
-    if not effective_guidebook:
-        effective_guidebook = GUIDEBOOK_EXCERPT_DEFAULT
-
     prompt = (
         f"{DESCRIPTION_ARCHIVE_PROMPT}\n\n"
         f"PRIMARY DESCRIPTION (existing draft):\n{primary_description}\n\n"
         f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
-        f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n\n"
-        f"PRESENTATION & MESSAGING GUIDEBOOK EXCERPT:\n{effective_guidebook}\n"
+        f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n"
     )
     _record_api_call(TEXT_MODEL, prompt, phase="description_generation")
     response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
@@ -2448,7 +2428,7 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
   textarea { width:100%; box-sizing:border-box; background:#091630; color:#fff; border:1px solid #2a3f6b; border-radius:8px; padding:10px; min-height:140px; font-size:14px; }
   #primary { min-height:180px; }
   #transcript { min-height:220px; }
-  #samples, #guidebook { min-height:140px; }
+  #samples { min-height:140px; }
   .btn { background:#4ade80; color:#06230f; border:none; border-radius:8px; padding:10px 14px; font-weight:700; cursor:pointer; }
   .btn:disabled { opacity:.6; cursor:not-allowed; }
   .muted { color:#9fb0d6; font-size:13px; }
@@ -2492,17 +2472,6 @@ TITLE: Episode 128 — Taiwan's Cyber Ambassador-At-Large Says Humans & AI Can F
 DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she's working to align AI with democratic principles as Taiwan's Cyber Ambassador. In this debate, I probe her P(doom) and stress-test her vision for safe AI development.</textarea>
   </div>
 
-  <div class="card">
-    <h3 style="margin-top:0;">Guidebook Excerpt</h3>
-    <textarea id="guidebook" placeholder="Paste Presentation & Messaging Guidebook excerpt">PRESENTATION & MESSAGING GUIDEBOOK EXCERPT
-DETERMINE YOUR MESSAGE
-If you had only 1 minute to summarize your whole presentation, THAT'S YOUR MESSAGE.
-Use a bumper-sticker mentality and state the one idea the audience must leave with.
-
-CRAFT THE STORY LINE
-Lead with your recommendation first, then explain why it's the best answer.
-Give conclusions before details so the audience can evaluate evidence actively, not passively.</textarea>
-  </div>
 
   <div class="card">
     <button class="btn" id="genBtn" onclick="generateDescriptions()">Generate Description Candidates</button>
@@ -2573,8 +2542,6 @@ async function generateDescriptions() {
   const primary = document.getElementById('primary').value.trim();
   const transcript = document.getElementById('transcript').value.trim();
   const samples = document.getElementById('samples').value.trim();
-  const guidebook = document.getElementById('guidebook').value.trim();
-
   if (!primary) { alert('Primary description is required.'); return; }
   if (!transcript) { alert('Transcript is required.'); return; }
 
@@ -2587,7 +2554,6 @@ async function generateDescriptions() {
     fd.append('primary_description', primary);
     fd.append('transcript', transcript);
     fd.append('channel_samples', samples);
-    fd.append('guidebook_excerpt', guidebook);
 
     const resp = await fetch('/generate_descriptions', { method:'POST', body: fd });
     const data = await resp.json();
@@ -2897,8 +2863,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         primary_description = fields.get("primary_description", "").strip()
         transcript = fields.get("transcript", "").strip()
         channel_samples = fields.get("channel_samples", "").strip()
-        guidebook_excerpt = fields.get("guidebook_excerpt", "").strip()
-
         if not primary_description:
             self._json_response({"error": "Primary description is required"})
             return
@@ -2908,8 +2872,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             client = get_client()
-            output = generate_descriptions(client, primary_description, transcript, channel_samples, guidebook_excerpt)
-            in_chars = len(primary_description) + len(transcript) + len(channel_samples) + len(guidebook_excerpt)
+            output = generate_descriptions(client, primary_description, transcript, channel_samples)
+            in_chars = len(primary_description) + len(transcript) + len(channel_samples)
             out_chars = len(output or "")
             with status_lock:
                 status["desc_calls"] = status.get("desc_calls", 0) + 1
