@@ -2458,13 +2458,18 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
   <div class="muted" style="margin-bottom:12px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
 
   <div class="card">
-    <h3 style="margin-top:0;">Primary Description (base draft)</h3>
-    <textarea id="primary" placeholder="Paste the primary/current description here"></textarea>
+    <h3 style="margin-top:0;">Transcript</h3>
+    <textarea id="transcript" placeholder="Paste full video transcript"></textarea>
+    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <input type="file" id="transcriptFile" accept=".txt,text/plain" style="display:none;" />
+      <button type="button" class="btn" style="background:#0f3460;color:#fff;" onclick="document.getElementById('transcriptFile').click()">Attach .txt Transcript</button>
+      <span id="transcriptFileStatus" class="muted"></span>
+    </div>
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0;">Transcript</h3>
-    <textarea id="transcript" placeholder="Paste full video transcript"></textarea>
+    <h3 style="margin-top:0;">Primary Description (base draft)</h3>
+    <textarea id="primary" placeholder="Paste the primary/current description here"></textarea>
   </div>
 
   <div class="card">
@@ -2508,6 +2513,29 @@ Give conclusions before details so the audience can evaluate evidence actively, 
 </div>
 
 <script>
+const transcriptFileInput = document.getElementById('transcriptFile');
+if (transcriptFileInput) {
+  transcriptFileInput.addEventListener('change', async (e) => {
+    const f = (e.target.files || [])[0];
+    const status = document.getElementById('transcriptFileStatus');
+    if (!f) return;
+    const name = (f.name || '').toLowerCase();
+    const isTxt = name.endsWith('.txt') || f.type === 'text/plain';
+    if (!isTxt) {
+      if (status) status.textContent = 'Please attach a .txt file only.';
+      e.target.value = '';
+      return;
+    }
+    try {
+      const text = await f.text();
+      document.getElementById('transcript').value = text;
+      if (status) status.textContent = `Loaded: ${f.name} (${text.length.toLocaleString()} chars)`;
+    } catch (err) {
+      if (status) status.textContent = 'Failed to read transcript file.';
+    }
+  });
+}
+
 async function generateDescriptions() {
   const btn = document.getElementById('genBtn');
   const status = document.getElementById('status');
