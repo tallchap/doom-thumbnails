@@ -173,7 +173,51 @@ status = {
     "idea_groups": {},
     "cost": 0.0,
     "session_cost": 0.0,
+    "last_api_call": "",
 }
+
+
+def _serialize_for_debug(obj):
+    """Best-effort serializer for prompt/API debug views."""
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, (int, float, bool)) or obj is None:
+        return json.dumps(obj)
+    if isinstance(obj, dict):
+        try:
+            return json.dumps(obj, indent=2, ensure_ascii=False, default=str)
+        except Exception:
+            return str(obj)
+    if isinstance(obj, (list, tuple)):
+        parts = []
+        for i, item in enumerate(obj, 1):
+            parts.append(f"--- CONTENT[{i}] ---")
+            parts.append(_serialize_for_debug(item))
+        return "\n".join(parts)
+
+    # Google File API / SDK objects (best effort)
+    fields = {}
+    for key in ("name", "display_name", "uri", "mime_type", "size_bytes"):
+        if hasattr(obj, key):
+            fields[key] = getattr(obj, key)
+    if fields:
+        return json.dumps({"file_ref": fields}, indent=2, ensure_ascii=False, default=str)
+
+    return repr(obj)
+
+
+def _record_api_call(model, contents, phase=""):
+    """Store last outbound API call payload for UI inspection."""
+    ts = datetime.datetime.now().isoformat()
+    payload = _serialize_for_debug(contents)
+    text = (
+        f"timestamp: {ts}\n"
+        f"phase: {phase or 'n/a'}\n"
+        f"model: {model}\n"
+        f"\n===== CONTENTS =====\n{payload}\n"
+    )
+    with status_lock:
+        status["last_api_call"] = text
 
 # ----- API Client & File API -----
 
@@ -335,6 +379,7 @@ def generate_ideas(client, title, custom_prompt, transcript, additional_instruct
         transcript_section=transcript_section,
         additional_instructions=addl,
     )
+    _record_api_call(TEXT_MODEL, prompt, phase="idea_generation")
     response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
     text = response.text.strip()
     if text.startswith("```"):
@@ -358,6 +403,7 @@ def generate_search_queries(client, title, custom_prompt):
     """Use Gemini text model to suggest image search queries. Returns list of strings."""
     custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
     prompt = SEARCH_QUERY_PROMPT.format(title=title, custom_prompt_section=custom_section)
+    _record_api_call(TEXT_MODEL, prompt, phase="search_query_generation")
     response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
     text = response.text.strip()
     if text.startswith("```"):
@@ -528,6 +574,7 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
         async with sem:
             for attempt in range(3):
                 try:
+                    _record_api_call(GEMINI_MODEL, contents, phase=phase)
                     response = await asyncio.wait_for(
                         client.aio.models.generate_content(
                             model=GEMINI_MODEL,
@@ -1155,6 +1202,9 @@ HTML = r"""<!DOCTYPE html>
       <div class="compute-progress-fill" id="computeProgressFill" style="width:0%"></div>
     </div>
     <div class="compute-log" id="computeLog"></div>
+    <div style="margin-top:8px; display:flex; gap:8px;">
+      <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
+    </div>
     <div class="compute-cost" id="computeCost" style="display:none;">
       Est. cost: <strong id="costAmount">$0.00</strong>
     </div>
@@ -1187,6 +1237,23 @@ function updateCostDisplay(cost) {
   if (costAmount) {
     costAmount.textContent = '$' + cost.toFixed(2);
     document.getElementById('computeCost').style.display = 'block';
+  }
+}
+
+async function openLastApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site.');
+    return;
+  }
+  w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
+  try {
+    const r = await fetch('/last_api_call');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
   }
 }
 
@@ -1928,6 +1995,9 @@ HTML_REVISION = r"""<!DOCTYPE html>
   <div class="card">
     <h3 style="margin-top:0;">Live Logs</h3>
     <div id="logBox" class="logs"></div>
+    <div style="margin-top:8px; display:flex; gap:8px;">
+      <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
+    </div>
     <div id="costText" class="costline"></div>
   </div>
 
@@ -1946,6 +2016,23 @@ let pastedImages = [];
 let attachedImages = [];
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function openLastApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site.');
+    return;
+  }
+  w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
+  try {
+    const r = await fetch('/last_api_call');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
+  }
+}
 
 function getPastedImageFiles(e) {
   const out = [];
@@ -2334,6 +2421,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "cost": 0, "session_cost": 0,
                 }
             self._json_response(safe)
+        elif path == "/last_api_call":
+            with status_lock:
+                payload = status.get("last_api_call", "")
+            self._json_response({"ok": True, "text": payload})
         elif path == "/image":
             self._serve_image(params.get("path", ""))
         elif path == "/download":
