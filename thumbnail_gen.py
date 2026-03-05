@@ -54,9 +54,9 @@ APP_PASS = os.environ.get("APP_PASSWORD", "")
 APP_MODE = os.environ.get("APP_MODE", "thumbnails").strip().lower()
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 TEXT_MODEL = "gemini-2.5-flash"
-DESCRIPTION_MODEL = "gemini-2.5-pro"
-CLAUDE_DESCRIPTION_MODEL = "claude-opus-4-1"
-GPT_DESCRIPTION_MODEL = "gpt-5"
+DESCRIPTION_MODEL = "gemini-3.1-pro"
+CLAUDE_DESCRIPTION_MODEL = "claude-opus-4-6"
+GPT_DESCRIPTION_MODEL = "gpt-5.2-pro"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 MAX_CONCURRENT = 15
@@ -2473,7 +2473,7 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
 <div class="wrap">
   <h1 style="margin:0 0 6px;">Doom Descriptions</h1>
   <div class="muted" style="margin-bottom:6px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
-  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Models in use:</span> <strong>Gemini: gemini-2.5-pro</strong> · <strong>Claude: claude-opus-4-1</strong> · <strong>GPT: gpt-5</strong></div>
+  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Models in use:</span> <strong>Gemini: gemini-3.1-pro</strong> · <strong>Claude: claude-opus-4-6</strong> · <strong>GPT: gpt-5.2-pro</strong></div>
 
   <div class="card">
     <h3 style="margin-top:0;">Episode Title (optional)</h3>
@@ -2534,9 +2534,9 @@ DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she
   <div class="card">
     <h3 style="margin-top:0;">Generated Output (3 Panes)</h3>
     <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
-      <div><div class="muted" style="margin-bottom:6px;">Gemini (gemini-2.5-pro)</div><pre id="out1" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gemini output)</pre></div>
-      <div><div class="muted" style="margin-bottom:6px;">Claude (claude-opus-4-1)</div><pre id="out2" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(claude output)</pre></div>
-      <div><div class="muted" style="margin-bottom:6px;">GPT (gpt-5)</div><pre id="out3" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gpt output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">Gemini (gemini-3.1-pro)</div><pre id="out1" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gemini output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">Claude (claude-opus-4-6)</div><pre id="out2" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(claude output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">GPT (gpt-5.2-pro)</div><pre id="out3" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gpt output)</pre></div>
     </div>
   </div>
 </div>
