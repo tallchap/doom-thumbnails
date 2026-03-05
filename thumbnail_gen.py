@@ -51,6 +51,7 @@ from PIL import Image
 PORT = int(os.environ.get("PORT", 9200))
 APP_USER = os.environ.get("APP_USERNAME", "doom")
 APP_PASS = os.environ.get("APP_PASSWORD", "")
+APP_MODE = os.environ.get("APP_MODE", "thumbnails").strip().lower()
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 TEXT_MODEL = "gemini-2.5-flash"
 MAX_CONCURRENT = 15
@@ -95,6 +96,54 @@ EPISODE TITLE: {title}
 
 Focus on: guest headshots, topic-relevant imagery (logos, icons, dramatic visuals), anything that could be composited into a thumbnail.
 Example: ["Daniel Kokotajlo headshot", "doomsday clock icon", "AI robot dramatic red lighting"]"""
+
+DESCRIPTION_ARCHIVE_PROMPT = """YouTube Description Creation Prompt
+Your job is to act as a YouTube strategist for an AI-focused channel. After reading the full video transcript, produce two distinct outputs:
+
+Output A – Description Candidates 1-3
+Three distinct YouTube video descriptions.
+Each description should include:
+- A short label classifying the description (e.g. "The Provocation," "The Explainer," "The Stakes Play").
+- A strong opening hook (first 2-3 lines visible before "Show more") that sells the click and watch-through.
+- A body section that expands on the video's argument, key claims, or story beats — written to boost search and watch time, not just summarize.
+- A tone that matches the existing channel samples provided.
+
+Output B – Candidate 4 (Messaging-Exercise Edition)
+First, demonstrate you've read the Presentation & Messaging Guidebook excerpt by explicitly writing:
+"Guidebook read and understood."
+Then, following the guidebook's steps, provide:
+1) Audience Definition
+2) Objective (one clear, realistic sentence beginning with an action verb)
+3) Core Message (<= 1 minute "bumper-sticker" answer)
+4) Storyline (bullet outline of the narrative arc)
+5) Finally, based on that foundation, write the full Description for Candidate 4.
+
+Think: "If the title + thumbnail got them to click, the description's job is to confirm they're in the right place AND feed the algorithm."
+Return everything in Markdown using this exact template:
+Description Candidate 1 — "[Label]"
+Description:
+[full description text here]
+Description Candidate 2 — "[Label]"
+Description:
+...
+Description Candidate 3 — "[Label]"
+Description:
+...
+
+Candidate 4 – Messaging-Exercise Edition
+Guidebook read and understood.
+Audience: ... Objective: ... Message: ... Storyline:
+- ...
+- ...
+Description:
+...
+
+RULES
+- Accuracy first: do not invent facts; represent the transcript faithfully.
+- Voice & vibe: match the tone of the existing channel samples — dramatic, high-contrast, slightly irreverent.
+- If the transcript does NOT cover a point, don't promise it in the description.
+- Front-load searchable keywords naturally — don't keyword-stuff.
+- Keep descriptions between 800-1,500 characters (above + below the fold combined) unless the video warrants longer."""
 
 IDEA_THUMBNAIL_PROMPT = """Generate a YouTube thumbnail image.
 
@@ -410,6 +459,20 @@ def generate_search_queries(client, title, custom_prompt):
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return _parse_json_array(text)
+
+
+def generate_descriptions(client, primary_description, transcript, channel_samples, guidebook_excerpt):
+    """Generate iterated YouTube description candidates."""
+    prompt = (
+        f"{DESCRIPTION_ARCHIVE_PROMPT}\n\n"
+        f"PRIMARY DESCRIPTION (existing draft):\n{primary_description}\n\n"
+        f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
+        f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{channel_samples}\n\n"
+        f"PRESENTATION & MESSAGING GUIDEBOOK EXCERPT:\n{guidebook_excerpt}\n"
+    )
+    _record_api_call(TEXT_MODEL, prompt, phase="description_generation")
+    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
+    return (response.text or "").strip()
 
 
 # ----- Prompt Building -----
@@ -2335,6 +2398,106 @@ startPolling();
 </body>
 </html>"""
 
+HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Doom Descriptions</title>
+<style>
+  body { font-family: Inter, system-ui, sans-serif; background:#060b1a; color:#fff; margin:0; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 22px; }
+  .card { background:#0d1b3e; border:1px solid #0f3460; border-radius:10px; padding:14px; margin-bottom:14px; }
+  textarea { width:100%; box-sizing:border-box; background:#091630; color:#fff; border:1px solid #2a3f6b; border-radius:8px; padding:10px; min-height:140px; font-size:14px; }
+  #primary { min-height:180px; }
+  #transcript { min-height:220px; }
+  #samples, #guidebook { min-height:140px; }
+  .btn { background:#4ade80; color:#06230f; border:none; border-radius:8px; padding:10px 14px; font-weight:700; cursor:pointer; }
+  .btn:disabled { opacity:.6; cursor:not-allowed; }
+  .muted { color:#9fb0d6; font-size:13px; }
+  pre { white-space:pre-wrap; word-break:break-word; background:#071229; border:1px solid #213b6c; border-radius:8px; padding:12px; min-height:240px; overflow:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 style="margin:0 0 6px;">Doom Descriptions</h1>
+  <div class="muted" style="margin-bottom:12px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Primary Description (base draft)</h3>
+    <textarea id="primary" placeholder="Paste the primary/current description here"></textarea>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Transcript</h3>
+    <textarea id="transcript" placeholder="Paste full video transcript"></textarea>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Channel Samples</h3>
+    <textarea id="samples" placeholder="Paste example channel descriptions/tone samples"></textarea>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Guidebook Excerpt</h3>
+    <textarea id="guidebook" placeholder="Paste Presentation & Messaging Guidebook excerpt"></textarea>
+  </div>
+
+  <div class="card">
+    <button class="btn" id="genBtn" onclick="generateDescriptions()">Generate Description Candidates</button>
+    <span id="status" class="muted" style="margin-left:10px;"></span>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Generated Output</h3>
+    <pre id="out">(nothing generated yet)</pre>
+  </div>
+</div>
+
+<script>
+async function generateDescriptions() {
+  const btn = document.getElementById('genBtn');
+  const status = document.getElementById('status');
+  const out = document.getElementById('out');
+  const primary = document.getElementById('primary').value.trim();
+  const transcript = document.getElementById('transcript').value.trim();
+  const samples = document.getElementById('samples').value.trim();
+  const guidebook = document.getElementById('guidebook').value.trim();
+
+  if (!primary) { alert('Primary description is required.'); return; }
+  if (!transcript) { alert('Transcript is required.'); return; }
+
+  btn.disabled = true;
+  status.textContent = 'Generating...';
+  out.textContent = 'Working...';
+
+  try {
+    const fd = new FormData();
+    fd.append('primary_description', primary);
+    fd.append('transcript', transcript);
+    fd.append('channel_samples', samples);
+    fd.append('guidebook_excerpt', guidebook);
+
+    const resp = await fetch('/generate_descriptions', { method:'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) {
+      out.textContent = data.error;
+      status.textContent = 'Failed';
+      return;
+    }
+    out.textContent = data.output || '(empty output)';
+    status.textContent = 'Done';
+  } catch (e) {
+    out.textContent = String(e);
+    status.textContent = 'Failed';
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>"""
+
 # ----- HTTP Server -----
 
 
@@ -2380,9 +2543,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _route_get(self, path, params):
         if path == "/":
-            self._serve_html()
+            if APP_MODE == "descriptions":
+                self._serve_descriptions_html()
+            else:
+                self._serve_html()
         elif path == "/revision":
             self._serve_revision_html()
+        elif path == "/descriptions":
+            self._serve_descriptions_html()
         elif path == "/status":
             # Thread-safe snapshot: copy mutable containers to prevent
             # RuntimeError from concurrent dict/list modification by
@@ -2464,6 +2632,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._handle_more_ideas(body)
             elif path == "/revise":
                 self._handle_revise_post(body)
+            elif path == "/generate_descriptions":
+                self._handle_generate_descriptions(body)
             else:
                 self.send_error(404)
         except Exception as e:
@@ -2484,6 +2654,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(HTML_REVISION.encode("utf-8"))
+
+    def _serve_descriptions_html(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(HTML_DESCRIPTIONS.encode("utf-8"))
 
     def _json_response(self, data):
         self.send_response(200)
@@ -2588,6 +2764,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"ok": True, "ideas": ideas_list})
         except Exception as e:
             self._json_response({"error": f"Idea generation failed: {str(e)[:200]}"})
+
+    def _handle_generate_descriptions(self, body):
+        """Generate iterated YouTube descriptions from transcript and guidance."""
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            fields, _ = parse_multipart(self.headers, body)
+        else:
+            fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
+
+        primary_description = fields.get("primary_description", "").strip()
+        transcript = fields.get("transcript", "").strip()
+        channel_samples = fields.get("channel_samples", "").strip()
+        guidebook_excerpt = fields.get("guidebook_excerpt", "").strip()
+
+        if not primary_description:
+            self._json_response({"error": "Primary description is required"})
+            return
+        if not transcript:
+            self._json_response({"error": "Transcript is required"})
+            return
+
+        try:
+            client = get_client()
+            output = generate_descriptions(client, primary_description, transcript, channel_samples, guidebook_excerpt)
+            self._json_response({"ok": True, "output": output})
+        except Exception as e:
+            self._json_response({"error": f"Description generation failed: {str(e)[:300]}"})
 
     def _handle_generate_from_ideas(self, body):
         """Generate 3 thumbnails per idea."""
