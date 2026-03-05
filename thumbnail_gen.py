@@ -2474,8 +2474,7 @@ DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she
 
 
   <div class="card">
-    <label for="genCount" class="muted">How many generations</label>
-    <input id="genCount" type="number" min="1" max="10" value="1" style="width:90px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px; margin-left:8px;">
+    <span class="muted">Generates 3 outputs per run</span>
     <button class="btn" id="genBtn" onclick="generateDescriptions()" style="margin-left:8px;">Generate Description Candidates</button>
     <button class="btn" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;color:#fff;margin-left:8px;">View last API prompt</button>
     <span id="status" class="muted" style="margin-left:10px;"></span>
@@ -2488,8 +2487,12 @@ DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0;">Generated Output</h3>
-    <pre id="out">(nothing generated yet)</pre>
+    <h3 style="margin-top:0;">Generated Output (3 Panes)</h3>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+      <pre id="out1" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(output 1)</pre>
+      <pre id="out2" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(output 2)</pre>
+      <pre id="out3" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(output 3)</pre>
+    </div>
   </div>
 </div>
 
@@ -2550,20 +2553,40 @@ if (transcriptFileInput) {
   });
 }
 
+function renderOutputPanes(text) {
+  const panes = [
+    document.getElementById('out1'),
+    document.getElementById('out2'),
+    document.getElementById('out3'),
+  ];
+  const raw = (text || '').trim();
+  const chunks = raw ? raw.split('\n\n---\n\n') : [];
+  for (let i = 0; i < 3; i++) {
+    const pane = panes[i];
+    if (!pane) continue;
+    let chunk = (chunks[i] || '').trim();
+    if (!chunk) {
+      pane.textContent = `(output ${i + 1})`;
+      continue;
+    }
+    chunk = chunk.replace(/^##\s*Generation\s*\d+\s*/i, '').trim();
+    pane.textContent = chunk;
+  }
+}
+
 async function generateDescriptions() {
   const btn = document.getElementById('genBtn');
   const status = document.getElementById('status');
-  const out = document.getElementById('out');
   const primary = document.getElementById('primary').value.trim();
   const transcript = document.getElementById('transcript').value.trim();
   const samples = document.getElementById('samples').value.trim();
-  const count = Math.max(1, Math.min(10, parseInt((document.getElementById('genCount') || {}).value || '1', 10) || 1));
+  const count = 3;
   if (!primary) { alert('Primary description is required.'); return; }
   if (!transcript) { alert('Transcript is required.'); return; }
 
   btn.disabled = true;
   status.textContent = 'Generating...';
-  out.textContent = 'Working...';
+  renderOutputPanes('');
 
   try {
     const fd = new FormData();
@@ -2575,11 +2598,11 @@ async function generateDescriptions() {
     const resp = await fetch('/generate_descriptions', { method:'POST', body: fd });
     const data = await resp.json();
     if (data.error) {
-      out.textContent = data.error;
+      renderOutputPanes(data.error);
       status.textContent = 'Failed';
       return;
     }
-    out.textContent = data.output || '(empty output)';
+    renderOutputPanes(data.output || '');
     status.textContent = 'Done';
     try {
       const s = await fetch('/status');
@@ -2588,7 +2611,7 @@ async function generateDescriptions() {
       renderLogs(sd);
     } catch (_) {}
   } catch (e) {
-    out.textContent = String(e);
+    renderOutputPanes(String(e));
     status.textContent = 'Failed';
   } finally {
     btn.disabled = false;
