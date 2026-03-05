@@ -2485,7 +2485,7 @@ DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she
 
   <div class="card">
     <h3 style="margin-top:0;">Work Log</h3>
-    <pre id="logBox">(no logs yet)</pre>
+    <pre id="logBox" style="min-height:90px;max-height:150px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(no logs yet)</pre>
   </div>
 
   <div class="card">
