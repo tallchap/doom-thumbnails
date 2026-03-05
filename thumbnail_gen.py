@@ -2438,7 +2438,8 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <h1 style="margin:0 0 6px;">Doom Descriptions</h1>
-  <div class="muted" style="margin-bottom:12px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
+  <div class="muted" style="margin-bottom:6px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
+  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Model in use:</span> <strong>gemini-2.5-flash</strong></div>
 
   <div class="card">
     <h3 style="margin-top:0;">Transcript</h3>
