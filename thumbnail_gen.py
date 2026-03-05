@@ -532,6 +532,14 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
 def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None):
     """Build revision prompts with custom instructions."""
     prompts = []
+    mentions_liron = "liron" in (custom_prompt or "").lower()
+    selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL) if mentions_liron else []
+    liron_instruction = (
+        "Note: this image includes Liron Shapira. His face MUST faithfully match the attached Liron reference photos "
+        "(same facial structure, eyes, nose, beard shape, skin tone). Do NOT generate a generic person or alter identity."
+        if selected_liron_refs else ""
+    )
+
     for img in selected_images:
         for v in range(count_per):
             prompt_text = REVISION_PROMPT.format(
@@ -543,6 +551,9 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.extend(brand_sample)
+            if liron_instruction:
+                contents.append(liron_instruction)
+                contents.extend(selected_liron_refs)
             prompts.append((idea_idx, v, contents))
     return prompts
 
