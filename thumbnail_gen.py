@@ -250,6 +250,9 @@ status = {
     "cost": 0.0,
     "session_cost": 0.0,
     "last_api_call": "",
+    "desc_calls": 0,
+    "desc_input_chars": 0,
+    "desc_output_chars": 0,
 }
 
 
@@ -2503,7 +2506,9 @@ Give conclusions before details so the audience can evaluate evidence actively, 
 
   <div class="card">
     <button class="btn" id="genBtn" onclick="generateDescriptions()">Generate Description Candidates</button>
+    <button class="btn" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;color:#fff;margin-left:8px;">View last API prompt</button>
     <span id="status" class="muted" style="margin-left:10px;"></span>
+    <div id="usage" class="muted" style="margin-top:10px;">Usage — calls: 0 | input chars: 0 | output chars: 0</div>
   </div>
 
   <div class="card">
@@ -2513,6 +2518,31 @@ Give conclusions before details so the audience can evaluate evidence actively, 
 </div>
 
 <script>
+async function openLastApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site.');
+    return;
+  }
+  w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
+  try {
+    const r = await fetch('/last_api_call');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
+  }
+}
+
+function renderUsage(d) {
+  const calls = (d && typeof d.desc_calls === 'number') ? d.desc_calls : 0;
+  const inChars = (d && typeof d.desc_input_chars === 'number') ? d.desc_input_chars : 0;
+  const outChars = (d && typeof d.desc_output_chars === 'number') ? d.desc_output_chars : 0;
+  const el = document.getElementById('usage');
+  if (el) el.textContent = `Usage — calls: ${calls} | input chars: ${inChars.toLocaleString()} | output chars: ${outChars.toLocaleString()}`;
+}
+
 const transcriptFileInput = document.getElementById('transcriptFile');
 if (transcriptFileInput) {
   transcriptFileInput.addEventListener('change', async (e) => {
@@ -2568,6 +2598,10 @@ async function generateDescriptions() {
     }
     out.textContent = data.output || '(empty output)';
     status.textContent = 'Done';
+    try {
+      const s = await fetch('/status');
+      renderUsage(await s.json());
+    } catch (_) {}
   } catch (e) {
     out.textContent = String(e);
     status.textContent = 'Failed';
@@ -2575,6 +2609,8 @@ async function generateDescriptions() {
     btn.disabled = false;
   }
 }
+
+fetch('/status').then(r => r.json()).then(renderUsage).catch(() => {});
 </script>
 </body>
 </html>"""
@@ -2654,6 +2690,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         "idea_groups": {k: list(v) for k, v in status["idea_groups"].items()},
                         "cost": status["cost"],
                         "session_cost": status.get("session_cost", 0.0),
+                        "desc_calls": status.get("desc_calls", 0),
+                        "desc_input_chars": status.get("desc_input_chars", 0),
+                        "desc_output_chars": status.get("desc_output_chars", 0),
                     }
             except Exception:
                 # Fallback: return minimal status so polling doesn't break
@@ -2668,6 +2707,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "output_dir": "", "episode_dir": "",
                     "round_num": 0, "ideas": [],
                     "cost": 0, "session_cost": 0,
+                    "desc_calls": 0, "desc_input_chars": 0, "desc_output_chars": 0,
                 }
             self._json_response(safe)
         elif path == "/last_api_call":
@@ -2869,6 +2909,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             client = get_client()
             output = generate_descriptions(client, primary_description, transcript, channel_samples, guidebook_excerpt)
+            in_chars = len(primary_description) + len(transcript) + len(channel_samples) + len(guidebook_excerpt)
+            out_chars = len(output or "")
+            with status_lock:
+                status["desc_calls"] = status.get("desc_calls", 0) + 1
+                status["desc_input_chars"] = status.get("desc_input_chars", 0) + in_chars
+                status["desc_output_chars"] = status.get("desc_output_chars", 0) + out_chars
+                status["log"].append(f"Descriptions generated: call #{status['desc_calls']} (in={in_chars} chars, out={out_chars} chars)")
             self._json_response({"ok": True, "output": output})
         except Exception as e:
             self._json_response({"error": f"Description generation failed: {str(e)[:300]}"})
