@@ -126,18 +126,19 @@ RULES:
 
 You are currently working on Variation #{variation_seed} out of #{variation_total} variations on this concept."""
 
-REVISION_PROMPT = """Revise this YouTube thumbnail for "Doom Debates" podcast.
+REVISION_PROMPT = """Revise the following YouTube thumbnail for "Doom Debates" podcast, based on these REVISION INSTRUCTIONS:
 
-REVISION INSTRUCTIONS: {custom_prompt}
-
-Keep the core composition but apply the requested changes.
-Maintain 16:9 aspect ratio. ONLY 1-5 words of text in the entire image — one short headline, nothing else.
-Do NOT introduce AI chip/microchip/circuit-board iconography (including a square chip with "AI" text).
-TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in quotes (single or double), preserve that quoted text EXACTLY as written — same words, order, punctuation, apostrophes, and capitalization. Do NOT paraphrase, normalize, or substitute synonyms for quoted text.
-{speaker_section}
-- The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
+{custom_prompt}
 
 You are currently working on Variation #{variation_seed} out of #{variation_total} variations on this concept."""
+
+REVISION_CONTEXT_PROMPT = """When designing the thumbnail keep this in mind:
+- Keep the core composition but just apply the requested changes.
+- Maintain 16:9 aspect ratio.
+- Do NOT introduce AI chip/microchip/circuit-board iconography (including a square chip with "AI" text).
+- TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in quotes (single or double), preserve that quoted text EXACTLY as written — same words, order, punctuation, apostrophes, and capitalization. Do NOT paraphrase, normalize, or substitute synonyms for quoted text.
+
+Match colors, layout, typography, and energy of the Doom Debates Podcast theme, which are enclosed as separate images, but WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references."""
 
 VARIATION_PROMPT = """Create a variation of the attached YouTube thumbnail for "Doom Debates" podcast.
 Keep the same general composition, mood, and subject, but vary:
@@ -530,33 +531,18 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
 
 def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None):
     """Build revision prompts with custom instructions."""
-    selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
-    speaker_section = (
-        "SPEAKER LIKENESS (CRITICAL): A targeted subset of speaker photos is attached — the person(s) MUST closely "
-        "resemble these photos. Same face, features, skin tone, hair."
-        if selected_speaker_refs else ""
-    )
     prompts = []
     for img in selected_images:
         for v in range(count_per):
             prompt_text = REVISION_PROMPT.format(
                 custom_prompt=custom_prompt,
-                speaker_section=speaker_section,
                 variation_seed=v + 1,
                 variation_total=count_per,
             )
-            contents = [prompt_text, img]
-            # Include user-uploaded attachment images in the revision
-            if attachment_refs:
-                contents.append("=== USER ATTACHMENT IMAGES — incorporate these into the revision as directed ===")
-                contents.extend(attachment_refs)
+            contents = [prompt_text, img, REVISION_CONTEXT_PROMPT]
             brand_sample = _select_brand_refs()
             if brand_sample:
-                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
-            if selected_speaker_refs:
-                contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
-                contents.extend(selected_speaker_refs)
             prompts.append((idea_idx, v, contents))
     return prompts
 
