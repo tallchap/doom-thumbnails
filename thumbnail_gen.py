@@ -124,7 +124,7 @@ RULES:
 - Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
 - DO NOT include AI chip/microchip/circuit-board iconography (including a square chip with "AI" text or similar symbols).
 
-Variation #{variation_seed} — make this meaningfully different from other variations."""
+You are currently working on Variation #{variation_seed} out of #{variation_total} variations on this concept."""
 
 REVISION_PROMPT = """Revise this YouTube thumbnail for "Doom Debates" podcast.
 
@@ -137,7 +137,7 @@ TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in q
 {speaker_section}
 - The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
 
-Variation #{variation_seed} — try something meaningfully different from the other revisions."""
+You are currently working on Variation #{variation_seed} out of #{variation_total} variations on this concept."""
 
 VARIATION_PROMPT = """Create a variation of the attached YouTube thumbnail for "Doom Debates" podcast.
 Keep the same general composition, mood, and subject, but vary:
@@ -151,7 +151,7 @@ Do NOT introduce AI chip/microchip/circuit-board iconography (including a square
 {speaker_section}
 - The ONLY human faces allowed are from the attached speaker/host photos (if any). Do NOT generate faces from brand references.
 
-Variation #{variation_seed} — try something meaningfully different."""
+You are currently working on Variation #{variation_seed} out of #{variation_total} variations on this concept."""
 
 # ----- State -----
 
@@ -465,6 +465,7 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
                 liron_section=liron_section,
                 additional_instructions=addl,
                 variation_seed=v + 1,
+                variation_total=variations_per,
             )
             contents = [prompt_text]
 
@@ -513,6 +514,7 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
             prompt_text = VARIATION_PROMPT.format(
                 speaker_section=speaker_section,
                 variation_seed=v + 1,
+                variation_total=count_per,
             )
             contents = [prompt_text, img]
             brand_sample = _select_brand_refs()
@@ -541,6 +543,7 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
                 custom_prompt=custom_prompt,
                 speaker_section=speaker_section,
                 variation_seed=v + 1,
+                variation_total=count_per,
             )
             contents = [prompt_text, img]
             # Include user-uploaded attachment images in the revision
