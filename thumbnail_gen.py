@@ -476,14 +476,16 @@ def generate_search_queries(client, title, custom_prompt):
     return _parse_json_array(text)
 
 
-def generate_descriptions(client, primary_description, transcript, channel_samples):
+def generate_descriptions(client, title, primary_description, transcript, channel_samples):
     """Generate iterated YouTube description candidates."""
     merged_samples = EXISTING_DESCRIPTIONS_TONE_REFERENCE
     if channel_samples:
         merged_samples = f"{merged_samples}\n\nADDITIONAL USER-PROVIDED CHANNEL SAMPLES:\n{channel_samples}"
 
+    title_block = f"EPISODE TITLE:\n{title}\n\n" if title else ""
     prompt = (
         f"{DESCRIPTION_ARCHIVE_PROMPT}\n\n"
+        f"{title_block}"
         f"PRIMARY DESCRIPTION (existing draft):\n{primary_description}\n\n"
         f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
         f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n"
@@ -2443,6 +2445,11 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
   <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Model in use:</span> <strong>gemini-2.5-pro</strong></div>
 
   <div class="card">
+    <h3 style="margin-top:0;">Episode Title (optional)</h3>
+    <input id="title" type="text" placeholder="e.g. Episode 134 — ..." style="width:100%; box-sizing:border-box; background:#091630; color:#fff; border:1px solid #2a3f6b; border-radius:8px; padding:10px; font-size:14px;">
+  </div>
+
+  <div class="card">
     <h3 style="margin-top:0;">Transcript</h3>
     <textarea id="transcript" placeholder="Paste full video transcript"></textarea>
     <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -2579,6 +2586,7 @@ function renderOutputPanes(text) {
 async function generateDescriptions() {
   const btn = document.getElementById('genBtn');
   const status = document.getElementById('status');
+  const title = document.getElementById('title').value.trim();
   const primary = document.getElementById('primary').value.trim();
   const transcript = document.getElementById('transcript').value.trim();
   const samples = document.getElementById('samples').value.trim();
@@ -2592,6 +2600,7 @@ async function generateDescriptions() {
 
   try {
     const fd = new FormData();
+    fd.append('title', title);
     fd.append('primary_description', primary);
     fd.append('transcript', transcript);
     fd.append('channel_samples', samples);
@@ -2904,6 +2913,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             fields = dict(urllib.parse.parse_qsl(body.decode("utf-8", errors="replace")))
 
+        title = fields.get("title", "").strip()
         primary_description = fields.get("primary_description", "").strip()
         transcript = fields.get("transcript", "").strip()
         channel_samples = fields.get("channel_samples", "").strip()
@@ -2923,7 +2933,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             client = get_client()
-            in_chars = len(primary_description) + len(transcript) + len(channel_samples)
+            in_chars = len(title) + len(primary_description) + len(transcript) + len(channel_samples)
             outputs = []
             with status_lock:
                 status["running"] = True
@@ -2934,7 +2944,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for i in range(count):
                 with status_lock:
                     status["log"].append(f"Description run {i+1}/{count} started")
-                output = generate_descriptions(client, primary_description, transcript, channel_samples)
+                output = generate_descriptions(client, title, primary_description, transcript, channel_samples)
                 outputs.append(f"## Generation {i+1}\n\n{output}")
                 out_chars = len(output or "")
                 with status_lock:
