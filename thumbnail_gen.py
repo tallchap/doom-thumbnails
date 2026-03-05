@@ -55,6 +55,10 @@ APP_MODE = os.environ.get("APP_MODE", "thumbnails").strip().lower()
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 TEXT_MODEL = "gemini-2.5-flash"
 DESCRIPTION_MODEL = "gemini-2.5-pro"
+CLAUDE_DESCRIPTION_MODEL = "claude-opus-4-1"
+GPT_DESCRIPTION_MODEL = "gpt-5"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 MAX_CONCURRENT = 15
 THUMBNAILS_DIR = os.path.join(SCRIPT_DIR, "thumbnails")
 EXAMPLES_DIR = os.path.join(SCRIPT_DIR, "doom_debates_thumbnails")
@@ -451,14 +455,13 @@ def generate_search_queries(client, title, custom_prompt):
     return _parse_json_array(text)
 
 
-def generate_descriptions(client, title, primary_description, revise_instructions, transcript, channel_samples):
-    """Generate one revised YouTube description."""
+def _build_description_prompt(title, primary_description, revise_instructions, transcript, channel_samples):
     merged_samples = EXISTING_DESCRIPTIONS_TONE_REFERENCE
     if channel_samples:
         merged_samples = f"{merged_samples}\n\nADDITIONAL USER-PROVIDED CHANNEL SAMPLES:\n{channel_samples}"
 
     title_block = f"EPISODE TITLE:\n{title}\n\n" if title else ""
-    prompt = (
+    return (
         f"{DESCRIPTION_ARCHIVE_PROMPT}\n\n"
         f"{title_block}"
         f"HOW TO REVISE (highest priority):\n{revise_instructions}\n\n"
@@ -466,9 +469,61 @@ def generate_descriptions(client, title, primary_description, revise_instruction
         f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
         f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n"
     )
-    _record_api_call(DESCRIPTION_MODEL, prompt, phase="description_generation")
+
+
+def generate_description_gemini(client, prompt):
+    _record_api_call(DESCRIPTION_MODEL, prompt, phase="description_generation_gemini")
     response = client.models.generate_content(model=DESCRIPTION_MODEL, contents=prompt)
     return (response.text or "").strip()
+
+
+def generate_description_claude(prompt):
+    if not ANTHROPIC_API_KEY:
+        return "[Claude unavailable: ANTHROPIC_API_KEY not set]"
+    _record_api_call(CLAUDE_DESCRIPTION_MODEL, prompt, phase="description_generation_claude")
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": CLAUDE_DESCRIPTION_MODEL,
+            "max_tokens": 1800,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    parts = data.get("content", [])
+    text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    return text.strip()
+
+
+def generate_description_gpt(prompt):
+    if not OPENAI_API_KEY:
+        return "[GPT unavailable: OPENAI_API_KEY not set]"
+    _record_api_call(GPT_DESCRIPTION_MODEL, prompt, phase="description_generation_gpt")
+    resp = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": GPT_DESCRIPTION_MODEL,
+            "input": prompt,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = data.get("output_text", "")
+    if text:
+        return text.strip()
+    return json.dumps(data)[:4000]
 
 
 # ----- Prompt Building -----
@@ -2418,7 +2473,7 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
 <div class="wrap">
   <h1 style="margin:0 0 6px;">Doom Descriptions</h1>
   <div class="muted" style="margin-bottom:6px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
-  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Model in use:</span> <strong>gemini-2.5-pro</strong></div>
+  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Models in use:</span> <strong>Gemini: gemini-2.5-pro</strong> · <strong>Claude: claude-opus-4-1</strong> · <strong>GPT: gpt-5</strong></div>
 
   <div class="card">
     <h3 style="margin-top:0;">Episode Title (optional)</h3>
@@ -2479,9 +2534,9 @@ DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she
   <div class="card">
     <h3 style="margin-top:0;">Generated Output (3 Panes)</h3>
     <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
-      <pre id="out1" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(output 1)</pre>
-      <pre id="out2" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(output 2)</pre>
-      <pre id="out3" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(output 3)</pre>
+      <div><div class="muted" style="margin-bottom:6px;">Gemini (gemini-2.5-pro)</div><pre id="out1" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gemini output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">Claude (claude-opus-4-1)</div><pre id="out2" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(claude output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">GPT (gpt-5)</div><pre id="out3" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gpt output)</pre></div>
     </div>
   </div>
 </div>
@@ -2902,12 +2957,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         revise_instructions = fields.get("revise_instructions", "").strip()
         transcript = fields.get("transcript", "").strip()
         channel_samples = fields.get("channel_samples", "").strip()
-        count_raw = fields.get("count", "1").strip()
-        try:
-            count = int(count_raw)
-        except Exception:
-            count = 1
-        count = max(1, min(10, count))
 
         if not primary_description:
             self._json_response({"error": "Primary description is required"})
@@ -2922,24 +2971,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             client = get_client()
             in_chars = len(title) + len(primary_description) + len(revise_instructions) + len(transcript) + len(channel_samples)
+            prompt = _build_description_prompt(title, primary_description, revise_instructions, transcript, channel_samples)
             outputs = []
             with status_lock:
                 status["running"] = True
                 status["phase"] = "descriptions"
                 status["done"] = False
-                status["log"].append(f"Starting description generation: {count} run(s)")
+                status["log"].append("Starting multi-model description generation (Gemini + Claude + GPT)")
 
-            for i in range(count):
+            providers = [
+                ("Gemini", lambda: generate_description_gemini(client, prompt)),
+                ("Claude", lambda: generate_description_claude(prompt)),
+                ("GPT", lambda: generate_description_gpt(prompt)),
+            ]
+
+            for name, fn in providers:
                 with status_lock:
-                    status["log"].append(f"Description run {i+1}/{count} started")
-                output = generate_descriptions(client, title, primary_description, revise_instructions, transcript, channel_samples)
-                outputs.append(f"## Generation {i+1}\n\n{output}")
+                    status["log"].append(f"{name} generation started")
+                try:
+                    output = fn()
+                except Exception as e:
+                    output = f"[{name} error] {str(e)[:260]}"
+                outputs.append(output)
                 out_chars = len(output or "")
                 with status_lock:
                     status["desc_calls"] = status.get("desc_calls", 0) + 1
                     status["desc_input_chars"] = status.get("desc_input_chars", 0) + in_chars
                     status["desc_output_chars"] = status.get("desc_output_chars", 0) + out_chars
-                    status["log"].append(f"Description run {i+1}/{count} done (in={in_chars} chars, out={out_chars} chars)")
+                    status["log"].append(f"{name} generation done (in={in_chars} chars, out={out_chars} chars)")
 
             with status_lock:
                 status["running"] = False
@@ -3433,7 +3492,9 @@ def main():
     print(f"Doom Debates Thumbnail Generator v2")
     print(f"Image Model: {GEMINI_MODEL}")
     print(f"Text Model: {TEXT_MODEL}")
-    print(f"Description Model: {DESCRIPTION_MODEL}")
+    print(f"Description Model (Gemini): {DESCRIPTION_MODEL}")
+    print(f"Description Model (Claude): {CLAUDE_DESCRIPTION_MODEL} {'[enabled]' if ANTHROPIC_API_KEY else '[disabled: no ANTHROPIC_API_KEY]'}")
+    print(f"Description Model (GPT): {GPT_DESCRIPTION_MODEL} {'[enabled]' if OPENAI_API_KEY else '[disabled: no OPENAI_API_KEY]'}")
     print(f"Output: {THUMBNAILS_DIR}")
     print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
     print(f"Liron Refs: {len(LIRON_FILES)} images from {LIRON_DIR}")
