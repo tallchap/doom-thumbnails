@@ -54,6 +54,7 @@ APP_PASS = os.environ.get("APP_PASSWORD", "")
 APP_MODE = os.environ.get("APP_MODE", "thumbnails").strip().lower()
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 TEXT_MODEL = "gemini-2.5-flash"
+DESCRIPTION_MODEL = "gemini-2.5-pro"
 MAX_CONCURRENT = 15
 THUMBNAILS_DIR = os.path.join(SCRIPT_DIR, "thumbnails")
 EXAMPLES_DIR = os.path.join(SCRIPT_DIR, "doom_debates_thumbnails")
@@ -487,8 +488,8 @@ def generate_descriptions(client, primary_description, transcript, channel_sampl
         f"FULL VIDEO TRANSCRIPT:\n{transcript}\n\n"
         f"EXISTING CHANNEL DESCRIPTION SAMPLES:\n{merged_samples}\n"
     )
-    _record_api_call(TEXT_MODEL, prompt, phase="description_generation")
-    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
+    _record_api_call(DESCRIPTION_MODEL, prompt, phase="description_generation")
+    response = client.models.generate_content(model=DESCRIPTION_MODEL, contents=prompt)
     return (response.text or "").strip()
 
 
@@ -2439,7 +2440,7 @@ HTML_DESCRIPTIONS = r"""<!DOCTYPE html>
 <div class="wrap">
   <h1 style="margin:0 0 6px;">Doom Descriptions</h1>
   <div class="muted" style="margin-bottom:6px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
-  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Model in use:</span> <strong>gemini-2.5-flash</strong></div>
+  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Model in use:</span> <strong>gemini-2.5-pro</strong></div>
 
   <div class="card">
     <h3 style="margin-top:0;">Transcript</h3>
@@ -3434,6 +3435,7 @@ def main():
     print(f"Doom Debates Thumbnail Generator v2")
     print(f"Image Model: {GEMINI_MODEL}")
     print(f"Text Model: {TEXT_MODEL}")
+    print(f"Description Model: {DESCRIPTION_MODEL}")
     print(f"Output: {THUMBNAILS_DIR}")
     print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
     print(f"Liron Refs: {len(LIRON_FILES)} images from {LIRON_DIR}")
