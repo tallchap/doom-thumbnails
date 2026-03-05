@@ -2474,10 +2474,17 @@ DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she
 
 
   <div class="card">
-    <button class="btn" id="genBtn" onclick="generateDescriptions()">Generate Description Candidates</button>
+    <label for="genCount" class="muted">How many generations</label>
+    <input id="genCount" type="number" min="1" max="10" value="1" style="width:90px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px; margin-left:8px;">
+    <button class="btn" id="genBtn" onclick="generateDescriptions()" style="margin-left:8px;">Generate Description Candidates</button>
     <button class="btn" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;color:#fff;margin-left:8px;">View last API prompt</button>
     <span id="status" class="muted" style="margin-left:10px;"></span>
     <div id="usage" class="muted" style="margin-top:10px;">Usage — calls: 0 | input chars: 0 | output chars: 0</div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Work Log</h3>
+    <pre id="logBox">(no logs yet)</pre>
   </div>
 
   <div class="card">
@@ -2512,6 +2519,14 @@ function renderUsage(d) {
   if (el) el.textContent = `Usage — calls: ${calls} | input chars: ${inChars.toLocaleString()} | output chars: ${outChars.toLocaleString()}`;
 }
 
+function renderLogs(d) {
+  const logs = (d && Array.isArray(d.log)) ? d.log : [];
+  const box = document.getElementById('logBox');
+  if (!box) return;
+  box.textContent = logs.length ? logs.slice(-120).join('\n') : '(no logs yet)';
+  box.scrollTop = box.scrollHeight;
+}
+
 const transcriptFileInput = document.getElementById('transcriptFile');
 if (transcriptFileInput) {
   transcriptFileInput.addEventListener('change', async (e) => {
@@ -2542,6 +2557,7 @@ async function generateDescriptions() {
   const primary = document.getElementById('primary').value.trim();
   const transcript = document.getElementById('transcript').value.trim();
   const samples = document.getElementById('samples').value.trim();
+  const count = Math.max(1, Math.min(10, parseInt((document.getElementById('genCount') || {}).value || '1', 10) || 1));
   if (!primary) { alert('Primary description is required.'); return; }
   if (!transcript) { alert('Transcript is required.'); return; }
 
@@ -2554,6 +2570,7 @@ async function generateDescriptions() {
     fd.append('primary_description', primary);
     fd.append('transcript', transcript);
     fd.append('channel_samples', samples);
+    fd.append('count', String(count));
 
     const resp = await fetch('/generate_descriptions', { method:'POST', body: fd });
     const data = await resp.json();
@@ -2566,7 +2583,9 @@ async function generateDescriptions() {
     status.textContent = 'Done';
     try {
       const s = await fetch('/status');
-      renderUsage(await s.json());
+      const sd = await s.json();
+      renderUsage(sd);
+      renderLogs(sd);
     } catch (_) {}
   } catch (e) {
     out.textContent = String(e);
@@ -2576,7 +2595,7 @@ async function generateDescriptions() {
   }
 }
 
-fetch('/status').then(r => r.json()).then(renderUsage).catch(() => {});
+fetch('/status').then(r => r.json()).then((d) => { renderUsage(d); renderLogs(d); }).catch(() => {});
 </script>
 </body>
 </html>"""
@@ -2863,6 +2882,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         primary_description = fields.get("primary_description", "").strip()
         transcript = fields.get("transcript", "").strip()
         channel_samples = fields.get("channel_samples", "").strip()
+        count_raw = fields.get("count", "1").strip()
+        try:
+            count = int(count_raw)
+        except Exception:
+            count = 1
+        count = max(1, min(10, count))
+
         if not primary_description:
             self._json_response({"error": "Primary description is required"})
             return
@@ -2872,16 +2898,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             client = get_client()
-            output = generate_descriptions(client, primary_description, transcript, channel_samples)
             in_chars = len(primary_description) + len(transcript) + len(channel_samples)
-            out_chars = len(output or "")
+            outputs = []
             with status_lock:
-                status["desc_calls"] = status.get("desc_calls", 0) + 1
-                status["desc_input_chars"] = status.get("desc_input_chars", 0) + in_chars
-                status["desc_output_chars"] = status.get("desc_output_chars", 0) + out_chars
-                status["log"].append(f"Descriptions generated: call #{status['desc_calls']} (in={in_chars} chars, out={out_chars} chars)")
-            self._json_response({"ok": True, "output": output})
+                status["running"] = True
+                status["phase"] = "descriptions"
+                status["done"] = False
+                status["log"].append(f"Starting description generation: {count} run(s)")
+
+            for i in range(count):
+                with status_lock:
+                    status["log"].append(f"Description run {i+1}/{count} started")
+                output = generate_descriptions(client, primary_description, transcript, channel_samples)
+                outputs.append(f"## Generation {i+1}\n\n{output}")
+                out_chars = len(output or "")
+                with status_lock:
+                    status["desc_calls"] = status.get("desc_calls", 0) + 1
+                    status["desc_input_chars"] = status.get("desc_input_chars", 0) + in_chars
+                    status["desc_output_chars"] = status.get("desc_output_chars", 0) + out_chars
+                    status["log"].append(f"Description run {i+1}/{count} done (in={in_chars} chars, out={out_chars} chars)")
+
+            with status_lock:
+                status["running"] = False
+                status["phase"] = "idle"
+                status["done"] = True
+
+            self._json_response({"ok": True, "output": "\n\n---\n\n".join(outputs)})
         except Exception as e:
+            with status_lock:
+                status["running"] = False
+                status["phase"] = "idle"
+                status["log"].append(f"Description generation failed: {str(e)[:180]}")
             self._json_response({"error": f"Description generation failed: {str(e)[:300]}"})
 
     def _handle_generate_from_ideas(self, body):
