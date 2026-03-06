@@ -2080,7 +2080,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Original Thumbnail</button>
       <span id="baseCount" class="hint"></span>
     </div>
-    <div id="basePasteZone" class="paste-zone" tabindex="0">Drop image here, click to attach, or paste (Ctrl+V / ⌘V) to set the primary thumbnail</div>
+    <div id="basePasteZone" class="paste-zone" tabindex="0">Drop image here, or paste (Ctrl+V / ⌘V) to set the primary thumbnail</div>
     <div id="basePreview" class="base-preview-grid"></div>
   </div>
 
@@ -2095,7 +2095,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Reference Images</button>
       <span id="attachCount" class="hint"></span>
     </div>
-    <div id="refsPasteZone" class="paste-zone" tabindex="0">Drop reference images here, click to attach, or paste (Ctrl+V / ⌘V)</div>
+    <div id="refsPasteZone" class="paste-zone" tabindex="0">Drop reference images here, or paste (Ctrl+V / ⌘V)</div>
     <div id="refsPreview" class="preview-grid"></div>
 
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
@@ -2294,7 +2294,7 @@ if (basePasteZone) {
     if (baseInput) baseInput.value = '';
     renderAttachmentsPreview();
     document.getElementById('statusText').textContent = 'Primary thumbnail dropped.';
-  }, openBasePicker);
+  });
 }
 
 const refsPasteZone = document.getElementById('refsPasteZone');
@@ -2313,7 +2313,7 @@ if (refsPasteZone) {
     attachedImages = attachedImages.concat(dropped);
     renderAttachmentsPreview();
     document.getElementById('statusText').textContent = 'Attached ' + dropped.length + ' dropped reference image(s).';
-  }, openAttachPicker);
+  });
 }
 
 document.getElementById('feedback').addEventListener('paste', (e) => {
