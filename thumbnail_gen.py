@@ -665,6 +665,9 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.extend(brand_sample)
+            if attachment_refs:
+                contents.append("The user has attached the following reference image(s) — use them to guide the revision:")
+                contents.extend(attachment_refs)
             if liron_instruction:
                 contents.append(liron_instruction)
                 contents.extend(selected_liron_refs)
