@@ -12,3 +12,5 @@
 !liron_reactions/
 !liron_reactions/**
 !FACE_CAPTURE_CONTEXT.md
+!assets/
+!assets/**

@@ -281,6 +281,14 @@ def _record_api_call(model, contents, phase=""):
 
 BRAND_FILES = []
 LIRON_FILES = []
+BORDER_REF_FILE = None  # Gemini File API ref for border reference image
+
+BORDER_PASS_PROMPT = """Take this thumbnail image and add a "Full Episode" border frame to it, matching the style of the attached reference image exactly:
+- Red rounded border frame around the entire image (same thickness, color, and corner radius as reference)
+- "DOOM DEBATES" wordmark/badge in the bottom-left corner (same style as reference)
+- Keep ALL existing content (text, faces, visuals) completely intact — only ADD the border and wordmark on top
+- Do NOT alter, crop, resize, or recompose the underlying thumbnail in any way
+- Output at 1280x720 resolution"""
 
 # Keep identity/style references intentionally small and targeted per request.
 MAX_BRAND_REFS_PER_CALL = 3
@@ -349,6 +357,57 @@ def upload_liron_references(client):
         except Exception as e:
             print(f"  Failed to upload {f}: {e}")
     print(f"Uploaded {len(LIRON_FILES)} Liron reaction photos.")
+
+
+def upload_border_reference(client):
+    """Upload border reference image to Gemini File API on startup."""
+    global BORDER_REF_FILE
+    border_path = os.path.join(SCRIPT_DIR, "assets", "border-reference.png")
+    if not os.path.isfile(border_path):
+        print(f"Border reference not found: {border_path} (border pass disabled)")
+        return
+    try:
+        BORDER_REF_FILE = client.files.upload(
+            file=border_path,
+            config=types.UploadFileConfig(display_name="border_reference"),
+        )
+        print(f"Uploaded border reference image.")
+    except Exception as e:
+        print(f"Failed to upload border reference: {e}")
+
+
+async def apply_border_pass(client, img_data):
+    """Second Gemini pass: add red border + DOOM DEBATES wordmark."""
+    if not BORDER_REF_FILE:
+        return None
+    try:
+        source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    BORDER_REF_FILE,
+                    types.Part.from_image(source_img),
+                    BORDER_PASS_PROMPT,
+                ],
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(
+                        aspect_ratio="16:9",
+                    ),
+                ),
+            ),
+            timeout=120,
+        )
+        if (response.candidates
+                and response.candidates[0].content
+                and response.candidates[0].content.parts):
+            for part in response.candidates[0].content.parts:
+                if part.inline_data and part.inline_data.data:
+                    return part.inline_data.data
+    except Exception as e:
+        print(f"Border pass failed: {e}")
+    return None
 
 
 def upload_files_from_bytes(client, file_bytes_list, name_prefix):
@@ -725,6 +784,21 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                         for part in response.candidates[0].content.parts:
                             if part.inline_data and part.inline_data.data:
                                 img_data = part.inline_data.data
+
+                                # Second Gemini pass: add border if enabled
+                                if status.get("add_border") and BORDER_REF_FILE:
+                                    with status_lock:
+                                        status["log"].append(f"thumb_{idx:03d}: applying border pass...")
+                                    border_result = await apply_border_pass(client, img_data)
+                                    if border_result:
+                                        img_data = border_result
+                                        with status_lock:
+                                            status["cost"] += COST_PER_IMAGE
+                                            status["session_cost"] += COST_PER_IMAGE
+                                    else:
+                                        with status_lock:
+                                            status["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
+
                                 filename = f"thumb_{idx:03d}.png"
                                 filepath = os.path.join(output_dir, filename)
                                 img = Image.open(io.BytesIO(img_data))
@@ -2118,6 +2192,10 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       <label for="genCount" class="hint" style="margin:0;">Count</label>
       <input id="genCount" type="number" min="1" max="50" value="10" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:8px;">
+        <input type="checkbox" id="addBorderCheck">
+        <span class="hint" style="margin:0;">Full Episode border</span>
+      </label>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
     </div>
     <div id="statusText" class="status"></div>
@@ -2136,6 +2214,8 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <h3 style="margin-top:0;">Results</h3>
     <div id="resultsGrid" class="grid"></div>
   </div>
+
+  <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">doom-thumbnails v2.1 &middot; Full Episode border pass</div>
 
 <script>
 let pollInterval = null;
@@ -2386,6 +2466,7 @@ async function runRevision() {
   for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
   fd.append('count', String(requestedCount));
+  fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
 
   try {
     const resp = await fetch('/revise_upload', { method:'POST', body: fd });
@@ -3957,6 +4038,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         status["sources"] = source_refs
         status["ideas"] = ideas_list
         status["round_num"] = 1
+        status["add_border"] = fields.get("add_border") == "1"
         run_generation(client, prompts, round_dir, "round1")
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
@@ -4036,6 +4118,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         prompts = [(riff_idea_idx, var, contents) for (_, var, contents) in prompts_raw]
 
+        status["add_border"] = fields.get("add_border") == "1"
         run_generation(client, prompts, round_dir, "riff")
         self._json_response({
             "ok": True, "output_dir": round_dir, "count": len(prompts),
@@ -4152,6 +4235,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             attachment_refs=attachment_refs if attachment_refs else None,
         )
 
+        status["add_border"] = fields.get("add_border") == "1"
         run_generation(client, prompts, round_dir, "revision_page")
         with status_lock:
             base_src = "uploaded file" if base_files else "follow-up result"
@@ -4262,6 +4346,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             attachment_refs=attachment_refs if attachment_refs else None,
         )
 
+        status["add_border"] = fields.get("add_border") == "1"
         run_generation(client, prompts, round_dir, "revision")
 
         self._json_response({
@@ -4357,6 +4442,7 @@ def main():
     client = get_client()
     upload_brand_references(client)
     upload_liron_references(client)
+    upload_border_reference(client)
     print(f"Doom Debates Thumbnail Generator v2")
     print(f"Image Model: {GEMINI_MODEL}")
     print(f"Text Model: {TEXT_MODEL}")
@@ -4366,6 +4452,7 @@ def main():
     print(f"Output: {THUMBNAILS_DIR}")
     print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
     print(f"Liron Refs: {len(LIRON_FILES)} images from {LIRON_DIR}")
+    print(f"Border Ref: {'loaded' if BORDER_REF_FILE else 'not found (border pass disabled)'}")
     print(f"Brave Search: {'enabled' if BRAVE_API_KEY else 'disabled (no BRAVE_API_KEY)'}")
     print(f"Server: http://0.0.0.0:{PORT}")
     if APP_PASS:
