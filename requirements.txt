@@ -2,3 +2,6 @@ google-genai
 python-dotenv
 Pillow
 requests
+boto3
+opencv-contrib-python-headless
+numpy

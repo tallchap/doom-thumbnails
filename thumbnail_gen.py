@@ -35,6 +35,9 @@ import webbrowser
 # a new key is added to idea_groups concurrently.
 status_lock = threading.Lock()
 
+import boto3
+import cv2
+import numpy as np
 import requests
 from dotenv import load_dotenv
 
@@ -64,6 +67,15 @@ THUMBNAILS_DIR = os.path.join(SCRIPT_DIR, "thumbnails")
 EXAMPLES_DIR = os.path.join(SCRIPT_DIR, "doom_debates_thumbnails")
 LIRON_DIR = os.path.join(SCRIPT_DIR, "liron_reactions")
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
+
+# ----- Face Capture (Amazon Rekognition) -----
+FC_S3_BUCKET = "doom-debates-videos"
+FC_SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:451721889333:AmazonRekognition-face-detection"
+FC_IAM_ROLE_ARN = "arn:aws:iam::451721889333:role/RekognitionVideoRole"
+FC_AWS_REGION = "us-east-1"
+FC_CAPTURES_DIR = os.path.join(SCRIPT_DIR, "captures")
+FC_CORE_EXPRESSIONS = ["smile", "grimace", "surprise", "angry", "sad",
+                       "thinking", "concerned", "excited", "serious", "skeptical", "amused"]
 COST_PER_IMAGE = 0.045  # $0.045 per 512px image
 
 BRAND_GUIDE = """BRAND — "DOOM DEBATES":
@@ -219,6 +231,8 @@ status = {
     "desc_input_chars": 0,
     "desc_output_chars": 0,
 }
+
+fc_status = {"running": False, "log": [], "done": False, "output_dir": "", "result_dirs": {}}
 
 
 def _serialize_for_debug(obj):
@@ -2676,6 +2690,753 @@ fetch('/status').then(r => r.json()).then((d) => { renderUsage(d); renderLogs(d)
 </body>
 </html>"""
 
+# =====================================================================
+# Face Capture — Amazon Rekognition scanning logic
+# =====================================================================
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass
+class _FCVideoMeta:
+    path: str
+    duration: float
+    fps: float
+    width: int
+    height: int
+    total_frames: int
+
+
+@_dataclass
+class _FCScoredFrame:
+    frame_idx: int
+    timestamp: float
+    bbox: tuple
+    bbox_norm: tuple
+    expression_score: float
+    quality_score: float
+    combined_score: float
+    quality_details: dict
+
+
+def _fc_get_video_meta(path):
+    result = subprocess.run([
+        "ffprobe", "-v", "quiet",
+        "-show_entries", "format=duration",
+        "-show_entries", "stream=width,height,r_frame_rate",
+        "-of", "json", path
+    ], capture_output=True, text=True, check=True)
+    data = json.loads(result.stdout)
+    duration = float(data["format"]["duration"])
+    vs = next((s for s in data.get("streams", []) if "width" in s), None)
+    if not vs:
+        raise RuntimeError("No video stream found")
+    w, h = int(vs["width"]), int(vs["height"])
+    n, d = vs["r_frame_rate"].split("/")
+    fps = float(n) / float(d)
+    return _FCVideoMeta(path=path, duration=duration, fps=fps,
+                        width=w, height=h, total_frames=int(duration * fps))
+
+
+# Expression scorers — map user-facing names to Rekognition emotion functions
+_FC_SCORERS = {}
+
+
+def _fc_register(name, *aliases):
+    def decorator(fn):
+        _FC_SCORERS[name] = fn
+        for a in aliases:
+            _FC_SCORERS[a] = fn
+        return fn
+    return decorator
+
+
+def _fc_emo(emotions, name):
+    return emotions.get(name, 0.0)
+
+
+@_fc_register("smile", "happy", "smiling", "laughing", "laugh")
+def _fc_smile(emotions, fa=None):
+    h = _fc_emo(emotions, "HAPPY")
+    if fa:
+        return min(1.0, h * 0.6 + fa.get("smile_confidence", 0.0) * 0.4)
+    return h
+
+@_fc_register("grimace", "disgust", "grimacing", "cringe")
+def _fc_grimace(emotions, fa=None):
+    return _fc_emo(emotions, "DISGUSTED")
+
+@_fc_register("surprise", "surprised", "shocked", "shock")
+def _fc_surprise(emotions, fa=None):
+    return _fc_emo(emotions, "SURPRISED")
+
+@_fc_register("angry", "anger", "frustrated", "mad")
+def _fc_angry(emotions, fa=None):
+    return _fc_emo(emotions, "ANGRY")
+
+@_fc_register("sad", "sadness", "upset", "frown", "frowning")
+def _fc_sad(emotions, fa=None):
+    return _fc_emo(emotions, "SAD")
+
+@_fc_register("thinking", "contemplative", "pensive")
+def _fc_thinking(emotions, fa=None):
+    return min(1.0, max(0.0, 1.0 - _fc_emo(emotions, "CALM") - _fc_emo(emotions, "HAPPY") * 0.3))
+
+@_fc_register("concerned", "worried")
+def _fc_concerned(emotions, fa=None):
+    return min(1.0, _fc_emo(emotions, "FEAR") * 0.6 + _fc_emo(emotions, "SAD") * 0.4)
+
+@_fc_register("confused", "puzzled")
+def _fc_confused(emotions, fa=None):
+    return _fc_emo(emotions, "CONFUSED")
+
+@_fc_register("excited", "enthusiastic")
+def _fc_excited(emotions, fa=None):
+    return min(1.0, _fc_emo(emotions, "HAPPY") * 0.5 + _fc_emo(emotions, "SURPRISED") * 0.5)
+
+@_fc_register("serious", "focused", "stern")
+def _fc_serious(emotions, fa=None):
+    return min(1.0, max(0.0, _fc_emo(emotions, "CALM") - _fc_emo(emotions, "HAPPY") * 0.5))
+
+@_fc_register("skeptical", "doubtful")
+def _fc_skeptical(emotions, fa=None):
+    return min(1.0, _fc_emo(emotions, "CONFUSED") * 0.5 + _fc_emo(emotions, "DISGUSTED") * 0.5)
+
+@_fc_register("amused", "entertained")
+def _fc_amused(emotions, fa=None):
+    h = _fc_emo(emotions, "HAPPY")
+    if fa:
+        return min(1.0, h * 0.7 + fa.get("smile_confidence", 0.0) * 0.3)
+    return h
+
+
+def _fc_scan_video(meta, expressions, min_face_size, num_samples, log_fn=None):
+    """Scan video via Amazon Rekognition Video API."""
+    scorers = {}
+    for expr in expressions:
+        key = expr.lower()
+        if key in _FC_SCORERS:
+            scorers[expr] = _FC_SCORERS[key]
+    if not scorers:
+        return {}
+
+    def emit(msg):
+        if log_fn:
+            log_fn(msg)
+
+    s3 = boto3.client("s3", region_name=FC_AWS_REGION)
+    rek = boto3.client("rekognition", region_name=FC_AWS_REGION)
+
+    s3_key = f"uploads/{os.path.basename(meta.path)}"
+    file_size_mb = os.path.getsize(meta.path) / (1024 * 1024)
+    emit(f"  Uploading video to S3 ({file_size_mb:.0f} MB)...")
+    s3.upload_file(meta.path, FC_S3_BUCKET, s3_key)
+    emit(f"  Upload complete.")
+
+    try:
+        start_resp = rek.start_face_detection(
+            Video={"S3Object": {"Bucket": FC_S3_BUCKET, "Name": s3_key}},
+            FaceAttributes="ALL",
+            NotificationChannel={
+                "SNSTopicArn": FC_SNS_TOPIC_ARN,
+                "RoleArn": FC_IAM_ROLE_ARN,
+            },
+        )
+        job_id = start_resp["JobId"]
+        emit(f"  Rekognition analyzing video (every frame)...")
+
+        import time as _time
+        poll_count = 0
+        while True:
+            poll = rek.get_face_detection(JobId=job_id, MaxResults=1)
+            job_status = poll["JobStatus"]
+            if job_status == "SUCCEEDED":
+                emit(f"  Analysis complete!")
+                break
+            elif job_status == "FAILED":
+                raise RuntimeError(f"Rekognition job failed: {poll.get('StatusMessage', 'Unknown')}")
+            poll_count += 1
+            if poll_count % 6 == 0:
+                emit(f"  Still analyzing... ({poll_count * 5}s elapsed)")
+            _time.sleep(5)
+
+        raw_faces = []
+        next_token = None
+        while True:
+            params = {"JobId": job_id, "MaxResults": 1000}
+            if next_token:
+                params["NextToken"] = next_token
+            resp = rek.get_face_detection(**params)
+            for entry in resp.get("Faces", []):
+                face = entry["Face"]
+                ts_sec = entry["Timestamp"] / 1000.0
+                emotions = {e["Type"]: e["Confidence"] / 100.0 for e in face.get("Emotions", [])}
+                bbox = face["BoundingBox"]
+                confidence = face.get("Confidence", 0)
+                quality = face.get("Quality", {})
+                pose = face.get("Pose", {})
+                eyes_open = face.get("EyesOpen", {})
+                smile = face.get("Smile", {})
+                face_attrs = {
+                    "brightness": quality.get("Brightness", 50.0),
+                    "sharpness": quality.get("Sharpness", 50.0),
+                    "yaw": pose.get("Yaw", 0.0),
+                    "pitch": pose.get("Pitch", 0.0),
+                    "roll": pose.get("Roll", 0.0),
+                    "eyes_open": eyes_open.get("Value", True),
+                    "eyes_open_confidence": eyes_open.get("Confidence", 0.0),
+                    "smile_value": smile.get("Value", False),
+                    "smile_confidence": smile.get("Confidence", 0.0) / 100.0,
+                }
+                raw_faces.append((ts_sec, emotions, bbox, confidence, face_attrs))
+            if "NextToken" in resp:
+                next_token = resp["NextToken"]
+            else:
+                break
+
+        emit(f"  Rekognition found {len(raw_faces)} face detections across entire video")
+
+        results = {expr: [] for expr in scorers}
+        filtered_count = 0
+        for ts_sec, emotions, bbox_raw, confidence, face_attrs in raw_faces:
+            bx_norm = max(0, bbox_raw["Left"])
+            by_norm = max(0, bbox_raw["Top"])
+            bw_norm = bbox_raw["Width"]
+            bh_norm = bbox_raw["Height"]
+            if bw_norm < min_face_size:
+                filtered_count += 1; continue
+            if confidence < 85:
+                filtered_count += 1; continue
+            if not face_attrs["eyes_open"] and face_attrs["eyes_open_confidence"] > 70:
+                filtered_count += 1; continue
+            if abs(face_attrs["yaw"]) > 45:
+                filtered_count += 1; continue
+            if abs(face_attrs["pitch"]) > 30:
+                filtered_count += 1; continue
+            if abs(face_attrs["roll"]) > 20:
+                filtered_count += 1; continue
+
+            x1 = int(bx_norm * meta.width)
+            y1 = int(by_norm * meta.height)
+            face_w = int(bw_norm * meta.width)
+            face_h = int(bh_norm * meta.height)
+            frame_idx = int(ts_sec * meta.fps)
+
+            brightness = face_attrs["brightness"] / 100.0
+            sharpness = face_attrs["sharpness"] / 100.0
+            frontal = 1.0 - min(1.0, (abs(face_attrs["yaw"]) / 45.0 + abs(face_attrs["pitch"]) / 30.0) / 2.0)
+            eyes_conf = face_attrs["eyes_open_confidence"] / 100.0 if face_attrs["eyes_open"] else 0.0
+            q_details = {
+                "brightness": round(brightness, 3),
+                "sharpness": round(sharpness, 3),
+                "frontal": round(frontal, 3),
+                "eyes_open": round(eyes_conf, 3),
+            }
+            q_score = round(sharpness * 0.35 + brightness * 0.25 + frontal * 0.25 + eyes_conf * 0.15, 4)
+
+            for expr, scorer in scorers.items():
+                expr_val = scorer(emotions, face_attrs)
+                combined = round(
+                    expr_val * 0.40 + sharpness * 0.20 + brightness * 0.15 + frontal * 0.15 + eyes_conf * 0.10, 4)
+                results[expr].append(_FCScoredFrame(
+                    frame_idx=frame_idx, timestamp=ts_sec,
+                    bbox=(x1, y1, face_w, face_h),
+                    bbox_norm=(bx_norm, by_norm, bw_norm, bh_norm),
+                    expression_score=round(expr_val, 4),
+                    quality_score=q_score, combined_score=combined,
+                    quality_details=q_details,
+                ))
+
+        emit(f"  Filtered {filtered_count} low-quality detections, scored {len(raw_faces) - filtered_count} faces.")
+    finally:
+        try:
+            s3.delete_object(Bucket=FC_S3_BUCKET, Key=s3_key)
+            emit(f"  Cleaned up S3 object.")
+        except Exception:
+            pass
+
+    return results
+
+
+def _fc_select_top(scored, n, gap=2.0):
+    ranked = sorted(scored, key=lambda s: s.combined_score, reverse=True)
+    selected = []
+    for s in ranked:
+        if not any(abs(s.timestamp - sel.timestamp) < gap for sel in selected):
+            selected.append(s)
+        if len(selected) >= n:
+            break
+    return selected
+
+
+def _fc_fmt_time(sec):
+    h, m, s = int(sec // 3600), int((sec % 3600) // 60), int(sec % 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _fc_fmt_time_hms(sec):
+    h, m, s = int(sec // 3600), int((sec % 3600) // 60), int(sec % 60)
+    return f"{h}h{m:02d}m{s:02d}s"
+
+
+def _fc_save_results(selected, output_dir, meta, expression, elapsed):
+    os.makedirs(output_dir, exist_ok=True)
+    cap = cv2.VideoCapture(meta.path)
+    entries = []
+    for rank, sf in enumerate(selected, 1):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, sf.frame_idx)
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        fh, fw = frame.shape[:2]
+        bx, by, bw, bh = sf.bbox
+        fname = f"face_{rank:03d}_score{sf.combined_score:.2f}_{_fc_fmt_time_hms(sf.timestamp)}.png"
+        cv2.imwrite(os.path.join(output_dir, fname), frame)
+        pad_x, pad_y = int(bw * 0.3), int(bh * 0.3)
+        crop = frame[max(0, by - pad_y):min(fh, by + bh + pad_y),
+                      max(0, bx - pad_x):min(fw, bx + bw + pad_x)]
+        cname = f"face_{rank:03d}_crop.png"
+        cv2.imwrite(os.path.join(output_dir, cname), crop)
+        entries.append({
+            "rank": rank, "file": fname, "crop_file": cname,
+            "timestamp_seconds": round(sf.timestamp, 2),
+            "timestamp_display": _fc_fmt_time(sf.timestamp),
+            "expression_score": sf.expression_score,
+            "quality_score": sf.quality_score,
+            "combined_score": sf.combined_score,
+            "quality_details": sf.quality_details,
+            "face_bbox": {"x": round(sf.bbox_norm[0], 3), "y": round(sf.bbox_norm[1], 3),
+                          "w": round(sf.bbox_norm[2], 3), "h": round(sf.bbox_norm[3], 3)},
+        })
+    cap.release()
+    with open(os.path.join(output_dir, "metadata.json"), "w") as f:
+        json.dump({
+            "video": os.path.basename(meta.path),
+            "expression": expression,
+            "video_duration_seconds": round(meta.duration, 2),
+            "video_resolution": f"{meta.width}x{meta.height}",
+            "processing_time_seconds": round(elapsed, 1),
+            "results": entries,
+        }, f, indent=2)
+
+
+def _fc_log(msg):
+    with status_lock:
+        fc_status["log"].append(msg)
+
+
+def _fc_run_capture(params):
+    """Background thread for face capture scanning."""
+    import time as _time
+    try:
+        video = params.get("video", "")
+        expressions = [e.strip() for e in params.get("expressions", "smile").split(",") if e.strip()]
+        output_base = params.get("output", FC_CAPTURES_DIR)
+        count = int(params.get("count", 10))
+
+        now = datetime.datetime.now()
+        folder_name = now.strftime("%b%d-%H%M")
+        output_dir = os.path.join(output_base, folder_name)
+        suffix = 2
+        while os.path.exists(output_dir):
+            output_dir = os.path.join(output_base, f"{folder_name}-{suffix}")
+            suffix += 1
+
+        if not os.path.isfile(video):
+            _fc_log(f"ERROR: File not found: {video}")
+            return
+
+        t0 = _time.time()
+        _fc_log(f"Analyzing: {os.path.basename(video)}")
+        meta = _fc_get_video_meta(video)
+        _fc_log(f"  {_fc_fmt_time(meta.duration)} | {meta.width}x{meta.height} @ {meta.fps:.1f}fps")
+        _fc_log(f"")
+        _fc_log(f"Scanning for: {', '.join(expressions)} (via Amazon Rekognition)")
+
+        all_scored = _fc_scan_video(meta, expressions, 0.10, 500, log_fn=_fc_log)
+
+        frames_found = max(len(v) for v in all_scored.values()) if all_scored else 0
+        _fc_log(f"  Found {frames_found} frames with faces")
+
+        if not frames_found:
+            _fc_log("")
+            _fc_log("No faces found. Try a different video.")
+            return
+
+        multi = len(expressions) > 1
+        result_dirs = {}
+        for expr in expressions:
+            scored = all_scored.get(expr, [])
+            if not scored:
+                _fc_log(f"\n[{expr}] No faces found.")
+                continue
+            selected = _fc_select_top(scored, count)
+            out_dir = os.path.join(output_dir, expr) if multi else output_dir
+            elapsed = _time.time() - t0
+            os.makedirs(out_dir, exist_ok=True)
+            _fc_save_results(selected, out_dir, meta, expr, elapsed)
+            result_dirs[expr] = out_dir
+            _fc_log(f"")
+            _fc_log(f"[{expr}] Saved {len(selected)} screenshots")
+            for i, s in enumerate(selected, 1):
+                _fc_log(f"  #{i}: score={s.combined_score:.2f} "
+                        f"(expr={s.expression_score:.2f}, qual={s.quality_score:.2f}) "
+                        f"@ {_fc_fmt_time(s.timestamp)}")
+
+        elapsed = _time.time() - t0
+        _fc_log(f"")
+        _fc_log(f"Done in {elapsed:.1f}s!")
+
+        with status_lock:
+            fc_status["output_dir"] = output_dir
+            fc_status["result_dirs"] = result_dirs
+    except Exception as e:
+        _fc_log(f"ERROR: {e}")
+    finally:
+        with status_lock:
+            fc_status["running"] = False
+            fc_status["done"] = True
+
+
+# =====================================================================
+# Face Capture — HTML Template
+# =====================================================================
+
+HTML_FACE_CAPTURE = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Doom Debates — Face Capture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e; color: #e0e0e0; padding: 32px;
+    min-height: 100vh;
+  }
+  h1 { color: #fff; font-size: 28px; margin-bottom: 4px; }
+  .subtitle { color: #888; font-size: 14px; margin-bottom: 8px; }
+  .nav { margin-bottom: 16px; }
+  .nav a { color: #4ade80; text-decoration: none; font-weight: 600; margin-right: 18px; }
+  .nav a:hover { text-decoration: underline; }
+  .card {
+    background: #16213e; border-radius: 12px; padding: 24px;
+    margin-bottom: 16px; border: 1px solid #0f3460;
+  }
+  label.section { display: block; font-size: 13px; color: #a0a0b0; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  input[type="text"] {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #0f3460; background: #0d1b3e; color: #fff;
+    font-size: 15px; outline: none;
+  }
+  input[type="text"]:focus { border-color: #e94560; }
+  .drop-zone {
+    position: relative; border: 2px dashed #0f3460; border-radius: 10px;
+    padding: 4px; transition: all 0.2s;
+  }
+  .drop-zone.dragover {
+    border-color: #e94560; background: rgba(233,69,96,0.08);
+  }
+  .drop-zone.dragover::after {
+    content: "Drop video file here"; position: absolute;
+    inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(13,27,62,0.9); border-radius: 8px;
+    color: #e94560; font-weight: 600; font-size: 15px; pointer-events: none;
+  }
+  .drop-zone input[type="text"] { border: none; }
+  .drop-hint { font-size: 11px; color: #666; margin-top: 4px; }
+  input[type="number"] {
+    width: 80px; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #0f3460; background: #0d1b3e; color: #fff;
+    font-size: 15px; outline: none; text-align: center;
+  }
+  .check-group { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .check-group label {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: 20px;
+    border: 1px solid #0f3460; cursor: pointer; font-size: 14px;
+    color: #a0a0b0; transition: all 0.15s; user-select: none;
+  }
+  .check-group label:hover { border-color: #e94560; color: #fff; }
+  .check-group input[type="checkbox"] { display: none; }
+  .check-group input[type="checkbox"]:checked + span { color: #fff; }
+  .check-group label:has(input:checked) {
+    background: #e94560; border-color: #e94560; color: #fff;
+  }
+  .check-group label.select-all {
+    background: transparent; border-color: #555; font-size: 12px;
+    padding: 5px 12px; color: #888;
+  }
+  .check-group label.select-all:hover { border-color: #aaa; color: #ccc; }
+  .divider { width: 1px; height: 24px; background: #0f3460; margin: 0 4px; }
+  .row { display: flex; gap: 24px; align-items: flex-end; }
+  .row > div { flex: 1; }
+  button.run {
+    padding: 12px 32px; background: #e94560; color: #fff; border: none;
+    border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer;
+    transition: background 0.15s;
+  }
+  button.run:hover { background: #c73a52; }
+  button.run:disabled { background: #555; cursor: not-allowed; }
+  button.open {
+    padding: 10px 24px; background: #0f3460; color: #fff; border: 1px solid #1a4080;
+    border-radius: 8px; font-size: 14px; cursor: pointer; margin-left: 12px;
+  }
+  button.open:hover { background: #1a4080; }
+  .btn-row { display: flex; align-items: center; margin-top: 8px; }
+  #log {
+    background: #0d1b3e; border-radius: 8px; padding: 16px;
+    font-family: "Menlo", "Monaco", monospace; font-size: 13px;
+    line-height: 1.6; min-height: 120px; max-height: 250px;
+    overflow-y: auto; white-space: pre-wrap; color: #b0b0c0;
+    border: 1px solid #0f3460;
+  }
+  #log .hl { color: #e94560; font-weight: 600; }
+  #log .expr-header { color: #53c0f0; font-weight: 700; font-size: 14px; }
+  .results-section { margin-top: 16px; }
+  .results-section h3 { color: #53c0f0; font-size: 15px; margin: 12px 0 8px 0; text-transform: capitalize; }
+  .results-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .results-row img {
+    height: 130px; border-radius: 8px; border: 2px solid #0f3460;
+    cursor: pointer; transition: border-color 0.15s;
+  }
+  .results-row img:hover { border-color: #e94560; }
+  .thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .thumb-ts { font-size: 11px; color: #888; font-family: "Menlo", monospace; }
+  .spinner {
+    display: inline-block; width: 18px; height: 18px;
+    border: 2px solid #555; border-top-color: #e94560;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    vertical-align: middle; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<h1>Doom Debates &mdash; Face Capture</h1>
+<div class="subtitle">Amazon Rekognition &mdash; Expression detection from video</div>
+<div class="nav">
+  <a href="/">&larr; Thumbnail Generator</a>
+  <a href="/revision">Revision</a>
+  <a href="/descriptions">Descriptions</a>
+</div>
+
+<div class="card">
+  <label class="section">Video File Path</label>
+  <div class="drop-zone" id="dropZone">
+    <input type="text" id="video" placeholder="/path/to/video.mp4 — or drag & drop a file here">
+  </div>
+  <div class="drop-hint">Drag a video file from Finder to fill in the path</div>
+</div>
+
+<div class="card">
+  <label class="section">Expressions (select one or more)</label>
+  <div class="check-group" id="exprGroup">
+    <label class="select-all" onclick="toggleAll(event)"><span>Select All</span></label>
+    <div class="divider"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <label class="section">Output Folder</label>
+      <input type="text" id="output" value="FC_OUTPUT_PLACEHOLDER">
+    </div>
+    <div style="flex:0 0 150px">
+      <label class="section">Per Expression</label>
+      <input type="number" id="count" value="10" min="1" max="100">
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="btn-row">
+    <button class="run" id="runBtn" onclick="run()">Find Expressions</button>
+    <button class="open" id="openBtn" onclick="openFolder()" style="display:none">Open Output Folder</button>
+    <span id="spinnerSpan" style="display:none; margin-left: 12px;">
+      <span class="spinner"></span> Processing...
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <label class="section">Status</label>
+  <div id="log">Ready. Select expressions and click "Find Expressions".</div>
+  <div id="results" class="results-section"></div>
+</div>
+
+<script>
+const EXPRESSIONS = FC_EXPR_LIST_PLACEHOLDER;
+
+const group = document.getElementById("exprGroup");
+EXPRESSIONS.forEach(expr => {
+  const label = document.createElement("label");
+  label.innerHTML = '<input type="checkbox" value="' + expr + '"><span>' + expr.charAt(0).toUpperCase() + expr.slice(1) + '</span>';
+  group.appendChild(label);
+});
+const first = group.querySelector('input[value="smile"]');
+if (first) first.checked = true;
+
+function toggleAll(e) {
+  e.preventDefault();
+  const boxes = document.querySelectorAll('#exprGroup input[type="checkbox"]');
+  const allChecked = Array.from(boxes).every(b => b.checked);
+  boxes.forEach(b => b.checked = !allChecked);
+}
+
+function getExprs() {
+  return Array.from(document.querySelectorAll('#exprGroup input:checked')).map(i => i.value);
+}
+
+function esc(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+async function run() {
+  const video = document.getElementById("video").value.trim();
+  const exprs = getExprs();
+  if (!video) { alert("Enter a video file path."); return; }
+  if (exprs.length === 0) { alert("Select at least one expression."); return; }
+
+  document.getElementById("runBtn").disabled = true;
+  document.getElementById("spinnerSpan").style.display = "inline";
+  document.getElementById("openBtn").style.display = "none";
+  document.getElementById("results").innerHTML = "";
+  document.getElementById("log").textContent = "";
+
+  const params = new URLSearchParams({
+    video, output: document.getElementById("output").value.trim(),
+    count: document.getElementById("count").value,
+    expressions: exprs.join(","),
+  });
+
+  await fetch("/fc_run?" + params.toString());
+
+  const poll = setInterval(async () => {
+    const resp = await fetch("/fc_status");
+    const data = await resp.json();
+    document.getElementById("log").innerHTML = data.log.map(l => {
+      if (l.startsWith("  #")) return '<span class="hl">' + esc(l) + '</span>';
+      if (l.startsWith("[") && l.includes("]")) return '<span class="expr-header">' + esc(l) + '</span>';
+      return esc(l);
+    }).join("\n");
+    document.getElementById("log").scrollTop = 999999;
+
+    if (data.done) {
+      clearInterval(poll);
+      document.getElementById("runBtn").disabled = false;
+      document.getElementById("spinnerSpan").style.display = "none";
+      if (data.output_dir) {
+        lastOutputDir = data.output_dir;
+        document.getElementById("openBtn").style.display = "inline-block";
+        showResults(data.result_dirs);
+      }
+    }
+  }, 500);
+}
+
+async function showResults(resultDirs) {
+  const container = document.getElementById("results");
+  container.innerHTML = "";
+  for (const [expr, dir] of Object.entries(resultDirs)) {
+    try {
+      const resp = await fetch("/fc_list_results?dir=" + encodeURIComponent(dir));
+      const items = await resp.json();
+      if (items.length === 0) continue;
+      const h3 = document.createElement("h3");
+      h3.textContent = expr;
+      container.appendChild(h3);
+      const row = document.createElement("div");
+      row.className = "results-row";
+      for (const item of items) {
+        const thumb = document.createElement("div");
+        thumb.className = "thumb";
+        const img = document.createElement("img");
+        img.src = "/fc_image?path=" + encodeURIComponent(item.crop_path);
+        img.title = item.crop_path.split("/").pop();
+        if (item.full_path) {
+          img.addEventListener("click", () => {
+            fetch("/fc_open_image?path=" + encodeURIComponent(item.full_path));
+          });
+        }
+        thumb.appendChild(img);
+        if (item.timestamp) {
+          const ts = document.createElement("div");
+          ts.className = "thumb-ts";
+          ts.textContent = item.timestamp;
+          thumb.appendChild(ts);
+        }
+        row.appendChild(thumb);
+      }
+      container.appendChild(row);
+    } catch(e) {}
+  }
+}
+
+let lastOutputDir = "";
+function openFolder() {
+  const dir = lastOutputDir || document.getElementById("output").value;
+  fetch("/fc_open_folder?dir=" + encodeURIComponent(dir));
+}
+
+// Drag & drop support
+const dropZone = document.getElementById("dropZone");
+const videoInput = document.getElementById("video");
+
+["dragenter", "dragover"].forEach(evt => {
+  dropZone.addEventListener(evt, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropZone.classList.add("dragover");
+  });
+});
+["dragleave", "drop"].forEach(evt => {
+  dropZone.addEventListener(evt, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropZone.classList.remove("dragover");
+  });
+});
+
+dropZone.addEventListener("drop", async e => {
+  let uri = e.dataTransfer.getData("text/uri-list");
+  if (uri) {
+    const line = uri.split(/\r?\n/).find(l => l && !l.startsWith("#"));
+    if (line) {
+      let path = line.trim();
+      if (path.startsWith("file://")) path = decodeURIComponent(path.slice(7));
+      videoInput.value = path;
+      return;
+    }
+  }
+  let plain = e.dataTransfer.getData("text/plain");
+  if (plain) {
+    plain = plain.trim();
+    if (plain.startsWith("file://")) { videoInput.value = decodeURIComponent(plain.slice(7)); return; }
+    if (plain.startsWith("/")) { videoInput.value = plain; return; }
+  }
+  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    const file = e.dataTransfer.files[0];
+    videoInput.value = "Resolving path\u2026";
+    try {
+      const resp = await fetch("/fc_resolve_file?name=" + encodeURIComponent(file.name) + "&size=" + file.size);
+      const data = await resp.json();
+      if (data.path) {
+        videoInput.value = data.path;
+      } else {
+        videoInput.value = "";
+        alert('Could not resolve full path for "' + file.name + '". Please paste the path manually.');
+      }
+    } catch(err) { videoInput.value = ""; }
+  }
+});
+
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => e.preventDefault());
+</script>
+</body>
+</html>"""
+
+
 # ----- HTTP Server -----
 
 
@@ -2785,6 +3546,98 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._handle_save_finals(params)
         elif path == "/open_folder":
             self._handle_open_folder()
+        # ----- Face Capture routes -----
+        elif path == "/face-capture":
+            self._serve_face_capture_html()
+        elif path == "/fc_status":
+            with status_lock:
+                fc_safe = {
+                    "running": fc_status["running"],
+                    "log": list(fc_status["log"]),
+                    "done": fc_status["done"],
+                    "output_dir": fc_status["output_dir"],
+                    "result_dirs": dict(fc_status["result_dirs"]),
+                }
+            self._json_response(fc_safe)
+        elif path == "/fc_run":
+            with status_lock:
+                if not fc_status["running"]:
+                    fc_status["running"] = True
+                    fc_status["done"] = False
+                    fc_status["log"] = []
+                    fc_status["output_dir"] = ""
+                    fc_status["result_dirs"] = {}
+                    t = threading.Thread(target=_fc_run_capture, args=(params,), daemon=True)
+                    t.start()
+            self._json_response({"ok": True})
+        elif path == "/fc_list_results":
+            d = params.get("dir", "")
+            items = []
+            if os.path.isdir(d):
+                meta_path = os.path.join(d, "metadata.json")
+                if os.path.isfile(meta_path):
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                    for entry in meta.get("results", []):
+                        crop_path = os.path.join(d, entry["crop_file"])
+                        full_path = os.path.join(d, entry["file"])
+                        if os.path.isfile(crop_path):
+                            items.append({
+                                "crop_path": crop_path,
+                                "full_path": full_path,
+                                "timestamp": entry.get("timestamp_display", ""),
+                                "score": entry.get("combined_score", 0),
+                            })
+                else:
+                    for f_name in sorted(os.listdir(d)):
+                        if f_name.endswith("_crop.png"):
+                            items.append({"crop_path": os.path.join(d, f_name), "full_path": "", "timestamp": "", "score": 0})
+            self._json_response(items)
+        elif path == "/fc_image":
+            img_path = params.get("path", "")
+            if os.path.isfile(img_path) and img_path.endswith(".png"):
+                with open(img_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            else:
+                self.send_error(404)
+        elif path == "/fc_resolve_file":
+            name = params.get("name", "")
+            size = int(params.get("size", "0"))
+            resolved = ""
+            if name:
+                home = os.path.expanduser("~")
+                try:
+                    result = subprocess.run(
+                        ["find", home, "-maxdepth", "6", "-name", name, "-type", "f"],
+                        capture_output=True, text=True, timeout=10)
+                    candidates = [c for c in result.stdout.strip().split("\n") if c and os.path.isfile(c)]
+                    if size:
+                        for c in candidates:
+                            try:
+                                if os.path.getsize(c) == size:
+                                    resolved = c; break
+                            except OSError:
+                                pass
+                    if not resolved and candidates:
+                        resolved = candidates[0]
+                except Exception:
+                    pass
+            self._json_response({"path": resolved})
+        elif path == "/fc_open_image":
+            img_path = params.get("path", "")
+            if os.path.isfile(img_path) and img_path.endswith(".png"):
+                os.system(f'open "{img_path}"')
+            self._json_response({"ok": True})
+        elif path == "/fc_open_folder":
+            d = params.get("dir", "")
+            if os.path.isdir(d):
+                os.system(f'open "{d}"')
+            self._json_response({"ok": True})
         else:
             self.send_error(404)
 
@@ -2842,6 +3695,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(HTML_DESCRIPTIONS.encode("utf-8"))
+
+    def _serve_face_capture_html(self):
+        html = HTML_FACE_CAPTURE.replace(
+            "FC_EXPR_LIST_PLACEHOLDER", json.dumps(FC_CORE_EXPRESSIONS)
+        ).replace(
+            "FC_OUTPUT_PLACEHOLDER", FC_CAPTURES_DIR
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
 
     def _json_response(self, data):
         self.send_response(200)
@@ -3488,6 +4352,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def main():
     os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+    os.makedirs(FC_CAPTURES_DIR, exist_ok=True)
 
     client = get_client()
     upload_brand_references(client)

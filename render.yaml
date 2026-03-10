@@ -13,4 +13,10 @@ services:
         sync: false
       - key: NO_BROWSER
         value: "1"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_DEFAULT_REGION
+        value: "us-east-1"
 
