@@ -909,7 +909,7 @@ def run_generation(client, prompts, output_dir, phase="round1"):
             status["idea_groups"] = {}
             status["cost"] = 0.0
         elif phase == "revision_page":
-            status["images"] = []
+            # Keep prior revision-page outputs visible; append new runs after existing ones.
             status["idea_groups"] = {}
             status["cost"] = 0.0
         # session_cost is never reset — it accumulates for the entire session
@@ -2656,10 +2656,6 @@ async function runRevision() {
 
   const countInput = document.getElementById('genCount');
   const requestedCount = Math.max(1, Math.min(50, parseInt((countInput && countInput.value) || '10', 10) || 10));
-
-  // Clear old results for new run
-  seen = new Set();
-  document.getElementById('resultsGrid').innerHTML = '';
 
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
