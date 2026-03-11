@@ -95,6 +95,45 @@ export function buildLinksRevisionUserMessage(currentLinks: string, instructions
   return `[Current links]\n${currentLinks}\n\n[Revision instructions]\n${instructions}\n\n[Transcript for context]\n${fullTranscript}`;
 }
 
+export function buildLinksChatSystemPrompt(transcript: string, rawInput: string): string {
+  return `You are a research assistant with web search capability helping curate links for a podcast/interview transcript. You have access to the full formatted transcript and original raw input.
+
+You can:
+- Suggest new links for people, organizations, books, papers, or resources mentioned
+- Verify and fix existing URLs using web search
+- Discuss which links are most relevant
+- Brainstorm link descriptions
+- Answer questions about what's mentioned in the transcript
+
+When suggesting a set of links, format them as:
+\`\`\`links
+Short Description — https://url
+Short Description — https://url
+\`\`\`
+
+This lets the user easily apply your suggestions. Use web search to verify URLs are correct.
+
+Be conversational and helpful. You can mix discussion with link suggestions.
+
+[Formatted transcript for reference]
+${transcript}
+
+[Original raw input for reference]
+${rawInput.slice(0, 10000)}`;
+}
+
+export function buildLinksChatUserMessage(chatHistory: { role: "user" | "assistant"; content: string }[], currentLinks: string, newMessage: string): string {
+  let msg = `[Current links]\n${currentLinks || "(none yet)"}\n\n`;
+  if (chatHistory.length > 0) {
+    msg += "[Conversation so far]\n";
+    for (const m of chatHistory) {
+      msg += `${m.role === "user" ? "User" : "Assistant"}: ${m.content}\n\n`;
+    }
+  }
+  msg += `User: ${newMessage}`;
+  return msg;
+}
+
 export function buildTitlesChatSystemPrompt(transcript: string, rawInput: string): string {
   return `You are a professional transcript editor helping brainstorm and refine chapter titles for a podcast/interview transcript. You have access to the full formatted transcript and the original raw input for context.
 

@@ -21,7 +21,7 @@ export interface FormatConfig {
   prompt: string;
 }
 
-export interface TitlesChatMessage {
+export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
 }

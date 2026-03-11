@@ -8,8 +8,8 @@ import { OutputViewer } from "./output-viewer";
 import { PromptEditor } from "./prompt-editor";
 import { TranscriptInput } from "./transcript-input";
 import { chunkTranscript, extractChapterTitlesFormatted, extractSectionHeaders, stripChapterTitles } from "./utils/chunker";
-import { buildLinksRevisionSystemPrompt, buildLinksRevisionUserMessage, buildLinksSystemPrompt, buildLinksUserMessage, buildSystemPrompt, buildTitlesChatSystemPrompt, buildTitlesChatUserMessage, buildUserMessage, DEFAULT_PROMPT } from "./utils/prompt";
-import type { ChunkResult, FormatConfig, TitlesChatMessage, TranscriptChunk } from "./utils/types";
+import { buildLinksChatSystemPrompt, buildLinksChatUserMessage, buildLinksSystemPrompt, buildLinksUserMessage, buildSystemPrompt, buildTitlesChatSystemPrompt, buildTitlesChatUserMessage, buildUserMessage, DEFAULT_PROMPT } from "./utils/prompt";
+import type { ChunkResult, FormatConfig, ChatMessage, TranscriptChunk } from "./utils/types";
 
 export function FormatTranscript() {
   const [rawTranscript, setRawTranscript] = useState("");
@@ -23,8 +23,11 @@ export function FormatTranscript() {
   const [isChattingTitles, setIsChattingTitles] = useState(false);
   const [isExtractingLinks, setIsExtractingLinks] = useState(false);
   const [finalDocument, setFinalDocument] = useState("");
-  const [titlesChatMessages, setTitlesChatMessages] = useState<TitlesChatMessage[]>([]);
+  const [titlesChatMessages, setTitlesChatMessages] = useState<ChatMessage[]>([]);
   const [titlesChatStreaming, setTitlesChatStreaming] = useState("");
+  const [linksChatMessages, setLinksChatMessages] = useState<ChatMessage[]>([]);
+  const [linksChatStreaming, setLinksChatStreaming] = useState("");
+  const [isChattingLinks, setIsChattingLinks] = useState(false);
   const outputRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -56,7 +59,7 @@ export function FormatTranscript() {
   async function processAllChunks() {
     const parsedChunks = chunkTranscript(rawTranscript, config.chunkMinutes);
     if (parsedChunks.length === 0) { toast.error("No timestamps detected in transcript"); return; }
-    setIsProcessing(true); setChunks(parsedChunks); setChunkResults([]); outputRef.current = ""; setDisplayOutput(""); setChapterTitles(""); setLinks(""); setFinalDocument(""); setTitlesChatMessages([]); setTitlesChatStreaming("");
+    setIsProcessing(true); setChunks(parsedChunks); setChunkResults([]); outputRef.current = ""; setDisplayOutput(""); setChapterTitles(""); setLinks(""); setFinalDocument(""); setTitlesChatMessages([]); setTitlesChatStreaming(""); setLinksChatMessages([]); setLinksChatStreaming("");
     titlesUserEdited.current = false;
     const abort = new AbortController(); abortRef.current = abort;
     let context: { sectionsCompleted: string[]; lastLines: string } | undefined;
@@ -112,32 +115,51 @@ export function FormatTranscript() {
     setIsExtractingLinks(false);
   }
 
-  async function reviseLinks(instructions: string) {
-    if (!displayOutput && !outputRef.current) return;
-    if (!instructions.trim()) return;
-    setIsExtractingLinks(true);
-    const previousLinks = links;
-    setLinks("");
+  async function chatAboutLinks(instruction: string) {
+    if (!instruction.trim()) return;
+    const userMsg: ChatMessage = { role: "user", content: instruction };
+    setLinksChatMessages((prev) => [...prev, userMsg]);
+    setIsChattingLinks(true);
+    setLinksChatStreaming("");
     try {
+      const transcript = outputRef.current || displayOutput;
       const response = await fetch("/api/format-chunk", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systemPrompt: buildLinksRevisionSystemPrompt(), userMessage: buildLinksRevisionUserMessage(previousLinks, instructions, displayOutput || outputRef.current), useWebSearch: true }),
+        body: JSON.stringify({
+          systemPrompt: buildLinksChatSystemPrompt(transcript, rawTranscript),
+          userMessage: buildLinksChatUserMessage(linksChatMessages, links, instruction),
+          useWebSearch: true,
+        }),
       });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       if (!response.body) throw new Error("No response body");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let result = "";
-      while (true) { const { done, value } = await reader.read(); if (done) break; result += decoder.decode(value, { stream: true }); setLinks(result); }
-      setLinks(result);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        result += decoder.decode(value, { stream: true });
+        setLinksChatStreaming(result);
+      }
+      setLinksChatMessages((prev) => [...prev, { role: "assistant", content: result.trim() }]);
+      setLinksChatStreaming("");
     } catch (err) {
-      toast.error(`Link revision failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-      setLinks(previousLinks);
+      toast.error(`Links chat failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     }
-    setIsExtractingLinks(false);
+    setIsChattingLinks(false);
+  }
+
+  function applyLinksFromChat(content: string) {
+    const fenceMatch = content.match(/```links\n([\s\S]*?)```/);
+    const linksText = fenceMatch ? fenceMatch[1].trim() : content;
+    const lines = linksText.split("\n").filter((l) => /https?:\/\//.test(l));
+    if (lines.length === 0) { toast.error("No valid links found in this message"); return; }
+    setLinks(lines.join("\n"));
+    toast.success("Links applied from chat");
   }
 
   async function chatAboutTitles(instruction: string) {
     if (!chapterTitles.trim() || !instruction.trim()) return;
-    const userMsg: TitlesChatMessage = { role: "user", content: instruction };
+    const userMsg: ChatMessage = { role: "user", content: instruction };
     setTitlesChatMessages((prev) => [...prev, userMsg]);
     setIsChattingTitles(true);
     setTitlesChatStreaming("");
@@ -191,12 +213,13 @@ export function FormatTranscript() {
         return line;
       }).join("\n");
     }
-    // Assemble final document: Links + Transcript
+    // Assemble final document: Links + Transcript + Footer
     let doc = "";
     if (links.trim()) {
       doc += `# Links\n\n${links.trim()}\n\n`;
     }
-    doc += transcript;
+    doc += `# Transcript\n\n${transcript}`;
+    doc += `\n\n---\n\nDoom Debates\u2019 Mission is to raise mainstream awareness of imminent extinction from AGI and build the social infrastructure for high-quality debate.\n\nSupport the mission by subscribing to my Substack at [DoomDebates.com](https://doomdebates.com) and to [youtube.com/@DoomDebates](https://youtube.com/@DoomDebates), or to really take things to the next level: [Donate](https://doomdebates.com/donate) \uD83D\uDE4F`;
     setFinalDocument(doc);
     toast.success("Final document built");
   }
@@ -242,9 +265,14 @@ export function FormatTranscript() {
         onApplyTitlesFromChat={applyTitlesFromChat}
         hasOutput={hasOutput}
         links={links}
+        onLinksChange={setLinks}
         onReextractLinks={() => { const t = outputRef.current || displayOutput; if (t) fetchLinks(t); }}
-        onReviseLinks={(instructions: string) => reviseLinks(instructions)}
+        onChatAboutLinks={chatAboutLinks}
+        onApplyLinksFromChat={applyLinksFromChat}
         isExtractingLinks={isExtractingLinks}
+        isChattingLinks={isChattingLinks}
+        linksChatMessages={linksChatMessages}
+        linksChatStreaming={linksChatStreaming}
         finalDocument={finalDocument}
         onBuildFinalDocument={buildFinalDocument}
       />
