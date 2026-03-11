@@ -293,13 +293,15 @@ def _record_api_call(model, contents, phase="", key="last_api_call"):
 
 BRAND_FILES = []
 LIRON_FILES = []
-BORDER_REF_FILE = None  # Gemini File API ref for border reference image
+BORDER_REF_FILES = []  # Gemini File API refs for border reference images
 
-BORDER_PASS_PROMPT = """Take this thumbnail image and add a "Full Episode" border frame to it, matching the style of the attached reference image exactly:
-- Red border frame around the entire image (same thickness, color, and texture)
-- "DOOM DEBATES" wordmark/badge in one of the corners (same style as reference), with a black drop shadow or dark glow behind the text to ensure it is clearly visible against any background
-- Keep ALL existing content (text, faces, visuals) completely intact — only ADD the border and wordmark
+BORDER_PASS_PROMPT = """Take this thumbnail image and add a "Full Episode" border frame to it, matching the style of the attached border reference images exactly:
+- Red border frame around the entire image (same thickness, color, and texture as the references)
+- The border goes DIRECTLY around the thumbnail content with NO gap, NO white space, and NO inner border between the red frame and the image content
+- "DOOM DEBATES" wordmark/badge in one of the corners (same style as references), with a black drop shadow or dark glow behind the text to ensure it is clearly visible against any background
+- CRITICAL: Keep ALL existing image content (text, faces, visuals) completely intact — only ADD the border frame and wordmark ON TOP of the existing image. Do NOT replace, blank out, or remove any part of the thumbnail content
 - Do NOT alter, crop, resize, or recompose the underlying thumbnail in any way
+- Do NOT add any white border, white gap, or white space anywhere
 - Output at 1280x720 resolution"""
 
 # Keep identity/style references intentionally small and targeted per request.
@@ -372,29 +374,40 @@ def upload_liron_references(client):
 
 
 def upload_border_reference(client):
-    """Upload border reference image to Gemini File API on startup."""
-    global BORDER_REF_FILE
-    border_path = os.path.join(SCRIPT_DIR, "assets", "border-reference.png")
-    if not os.path.isfile(border_path):
-        print(f"Border reference not found: {border_path} (border pass disabled)")
+    """Upload border reference images from assets/ to Gemini File API on startup."""
+    global BORDER_REF_FILES
+    assets_dir = os.path.join(SCRIPT_DIR, "assets")
+    if not os.path.isdir(assets_dir):
+        print(f"Assets directory not found: {assets_dir} (border pass disabled)")
         return
-    try:
-        BORDER_REF_FILE = client.files.upload(
-            file=border_path,
-            config=types.UploadFileConfig(display_name="border_reference"),
-        )
-        print(f"Uploaded border reference image.")
-    except Exception as e:
-        print(f"Failed to upload border reference: {e}")
+    files = sorted(
+        f for f in os.listdir(assets_dir)
+        if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    )
+    if not files:
+        print("No border reference images found in assets/.")
+        return
+    print(f"Uploading {len(files)} border reference images...")
+    for i, f in enumerate(files):
+        filepath = os.path.join(assets_dir, f)
+        try:
+            uploaded = client.files.upload(
+                file=filepath,
+                config=types.UploadFileConfig(display_name=f"border_ref_{i+1:02d}"),
+            )
+            BORDER_REF_FILES.append(uploaded)
+        except Exception as e:
+            print(f"  Failed to upload {f}: {e}")
+    print(f"Uploaded {len(BORDER_REF_FILES)} border reference images.")
 
 
 async def apply_border_pass(client, img_data):
     """Second Gemini pass: add red border + DOOM DEBATES wordmark."""
-    if not BORDER_REF_FILE:
+    if not BORDER_REF_FILES:
         return None
     try:
         source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
-        border_contents = [BORDER_REF_FILE, source_img, BORDER_PASS_PROMPT]
+        border_contents = list(BORDER_REF_FILES) + [source_img, BORDER_PASS_PROMPT]
         _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call")
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
@@ -798,7 +811,7 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                                 img_data = part.inline_data.data
 
                                 # Second Gemini pass: add border if enabled
-                                if status.get("add_border") and BORDER_REF_FILE:
+                                if status.get("add_border") and BORDER_REF_FILES:
                                     with status_lock:
                                         status["log"].append(f"thumb_{idx:03d}: applying border pass...")
                                     border_result = await apply_border_pass(client, img_data)
@@ -4483,7 +4496,7 @@ def main():
     print(f"Output: {THUMBNAILS_DIR}")
     print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
     print(f"Liron Refs: {len(LIRON_FILES)} images from {LIRON_DIR}")
-    print(f"Border Ref: {'loaded' if BORDER_REF_FILE else 'not found (border pass disabled)'}")
+    print(f"Border Refs: {len(BORDER_REF_FILES)} images from assets/")
     print(f"Brave Search: {'enabled' if BRAVE_API_KEY else 'disabled (no BRAVE_API_KEY)'}")
     print(f"Server: http://0.0.0.0:{PORT}")
     if APP_PASS:
