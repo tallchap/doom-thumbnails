@@ -296,9 +296,9 @@ LIRON_FILES = []
 BORDER_REF_FILE = None  # Gemini File API ref for border reference image
 
 BORDER_PASS_PROMPT = """Take this thumbnail image and add a "Full Episode" border frame to it, matching the style of the attached reference image exactly:
-- Red rounded border frame around the entire image (same thickness, color, and corner radius as reference)
-- "DOOM DEBATES" wordmark/badge in the bottom-left corner (same style as reference)
-- Keep ALL existing content (text, faces, visuals) completely intact — only ADD the border and wordmark on top
+- Red border frame around the entire image (same thickness, color, and texture)
+- "DOOM DEBATES" wordmark/badge in one of the corners (same style as reference), with a black drop shadow or dark glow behind the text to ensure it is clearly visible against any background
+- Keep ALL existing content (text, faces, visuals) completely intact — only ADD the border and wordmark
 - Do NOT alter, crop, resize, or recompose the underlying thumbnail in any way
 - Output at 1280x720 resolution"""
 
