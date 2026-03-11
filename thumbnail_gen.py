@@ -2397,7 +2397,7 @@ function openApiPreviewWindow() {
       </div>
       <div class="note">Editable fields (green border) will be used in the next generation. Grey blocks are system-managed.</div>
 
-      <script>
+      <scr` + `ipt>
         const defaultCtx = ${JSON.stringify(defaultRevisionContext)};
         const defaultBorder = ${JSON.stringify(defaultBorderPrompt)};
         function applyAndClose() {
@@ -2407,7 +2407,7 @@ function openApiPreviewWindow() {
           }
           window.close();
         }
-      </script>
+      </scr` + `ipt>
     </body></html>`);
     w.document.close();
   });
