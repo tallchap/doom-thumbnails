@@ -238,6 +238,7 @@ status = {
     "cost": 0.0,
     "session_cost": 0.0,
     "last_api_call": "",
+    "last_border_api_call": "",
     "desc_calls": 0,
     "desc_input_chars": 0,
     "desc_output_chars": 0,
@@ -275,7 +276,7 @@ def _serialize_for_debug(obj):
     return repr(obj)
 
 
-def _record_api_call(model, contents, phase=""):
+def _record_api_call(model, contents, phase="", key="last_api_call"):
     """Store last outbound API call payload for UI inspection."""
     ts = datetime.datetime.now().isoformat()
     payload = _serialize_for_debug(contents)
@@ -286,7 +287,7 @@ def _record_api_call(model, contents, phase=""):
         f"\n===== CONTENTS =====\n{payload}\n"
     )
     with status_lock:
-        status["last_api_call"] = text
+        status[key] = text
 
 # ----- API Client & File API -----
 
@@ -393,14 +394,12 @@ async def apply_border_pass(client, img_data):
         return None
     try:
         source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
+        border_contents = [BORDER_REF_FILE, source_img, BORDER_PASS_PROMPT]
+        _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call")
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model=GEMINI_MODEL,
-                contents=[
-                    BORDER_REF_FILE,
-                    source_img,
-                    BORDER_PASS_PROMPT,
-                ],
+                contents=border_contents,
                 config=types.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"],
                 ),
@@ -2219,6 +2218,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <div id="logBox" class="logs"></div>
     <div style="margin-top:8px; display:flex; gap:8px;">
       <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
+      <button class="btn btn-sm" type="button" onclick="openBorderApiCallWindow()" style="background:#0f3460;">View border API prompt</button>
     </div>
     <div id="costText" class="costline"></div>
   </div>
@@ -2255,6 +2255,20 @@ async function openLastApiCallWindow() {
     w.document.querySelector('pre').textContent = text;
   } catch (e) {
     w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
+  }
+}
+
+async function openBorderApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Popup blocked.'); return; }
+  w.document.write('<!doctype html><html><head><title>Border Pass API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Border pass API call payload</div><pre>Loading\u2026</pre></body></html>');
+  try {
+    const r = await fetch('/last_border_api_call');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No border pass API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load: ' + e;
   }
 }
 
@@ -3629,6 +3643,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/last_api_call":
             with status_lock:
                 payload = status.get("last_api_call", "")
+            self._json_response({"ok": True, "text": payload})
+        elif path == "/last_border_api_call":
+            with status_lock:
+                payload = status.get("last_border_api_call", "")
             self._json_response({"ok": True, "text": payload})
         elif path == "/image":
             self._serve_image(params.get("path", ""))
