@@ -193,11 +193,39 @@ export function FormatTranscript() {
     // Extract titles from ```titles ... ``` block or from lines matching HH:MM:SS — Title
     const fenceMatch = content.match(/```titles\n([\s\S]*?)```/);
     const titlesText = fenceMatch ? fenceMatch[1].trim() : content;
-    const lines = titlesText.split("\n").filter((l) => /^\d{1,2}:\d{2}:\d{2}\s*[—–-]/.test(l.trim()));
-    if (lines.length === 0) { toast.error("No valid titles found in this message"); return; }
-    setChapterTitles(lines.join("\n"));
+    const newLines = titlesText.split("\n").filter((l) => /^\d{1,2}:\d{2}:\d{2}\s*[—–-]/.test(l.trim()));
+    if (newLines.length === 0) { toast.error("No valid titles found in this message"); return; }
+    // Build a map of timestamp -> new title from the chat message
+    const newTitlesMap = new Map<string, string>();
+    for (const line of newLines) {
+      const match = line.trim().match(/^(\d{1,2}:\d{2}:\d{2})\s*[—–-]\s*(.+)$/);
+      if (match) {
+        // Normalize timestamp to HH:MM:SS
+        const ts = match[1].split(":")[0].length === 1 ? "0" + match[1] : match[1];
+        newTitlesMap.set(ts, match[2].trim());
+      }
+    }
+    // Merge: update matching timestamps, keep the rest unchanged
+    const existingLines = chapterTitles.split("\n").filter((l) => l.trim());
+    const merged = existingLines.map((line) => {
+      const m = line.trim().match(/^(\d{1,2}:\d{2}:\d{2})\s*[—–-]\s*(.+)$/);
+      if (m) {
+        const ts = m[1].split(":")[0].length === 1 ? "0" + m[1] : m[1];
+        if (newTitlesMap.has(ts)) return `${ts} — ${newTitlesMap.get(ts)}`;
+      }
+      return line;
+    });
+    // Also add any new timestamps not in existing titles (appended at end)
+    const existingTimestamps = new Set(existingLines.map((l) => {
+      const m = l.trim().match(/^(\d{1,2}:\d{2}:\d{2})/);
+      return m ? (m[1].split(":")[0].length === 1 ? "0" + m[1] : m[1]) : "";
+    }));
+    newTitlesMap.forEach((title, ts) => {
+      if (!existingTimestamps.has(ts)) merged.push(`${ts} — ${title}`);
+    });
+    setChapterTitles(merged.join("\n"));
     titlesUserEdited.current = true;
-    toast.success("Titles applied from chat");
+    toast.success(`${newTitlesMap.size} title${newTitlesMap.size > 1 ? "s" : ""} applied from chat`);
   }
 
   function buildFinalDocument() {
