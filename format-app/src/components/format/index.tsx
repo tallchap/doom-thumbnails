@@ -200,30 +200,37 @@ export function FormatTranscript() {
     for (const line of newLines) {
       const match = line.trim().match(/^(\d{1,2}:\d{2}:\d{2})\s*[—–-]\s*(.+)$/);
       if (match) {
-        // Normalize timestamp to HH:MM:SS
         const ts = match[1].split(":")[0].length === 1 ? "0" + match[1] : match[1];
         newTitlesMap.set(ts, match[2].trim());
       }
     }
-    // Merge: update matching timestamps, keep the rest unchanged
     const existingLines = chapterTitles.split("\n").filter((l) => l.trim());
-    const merged = existingLines.map((line) => {
-      const m = line.trim().match(/^(\d{1,2}:\d{2}:\d{2})\s*[—–-]\s*(.+)$/);
-      if (m) {
-        const ts = m[1].split(":")[0].length === 1 ? "0" + m[1] : m[1];
-        if (newTitlesMap.has(ts)) return `${ts} — ${newTitlesMap.get(ts)}`;
-      }
-      return line;
-    });
-    // Also add any new timestamps not in existing titles (appended at end)
-    const existingTimestamps = new Set(existingLines.map((l) => {
-      const m = l.trim().match(/^(\d{1,2}:\d{2}:\d{2})/);
-      return m ? (m[1].split(":")[0].length === 1 ? "0" + m[1] : m[1]) : "";
-    }));
-    newTitlesMap.forEach((title, ts) => {
-      if (!existingTimestamps.has(ts)) merged.push(`${ts} — ${title}`);
-    });
-    setChapterTitles(merged.join("\n"));
+    // Full replacement if chat provides a complete set (>= existing count), merge if partial
+    let result: string[];
+    if (newTitlesMap.size >= existingLines.length) {
+      // Full replacement — use the new titles as-is
+      result = [];
+      newTitlesMap.forEach((title, ts) => { result.push(`${ts} — ${title}`); });
+    } else {
+      // Partial merge — update matching timestamps, keep rest unchanged
+      result = existingLines.map((line) => {
+        const m = line.trim().match(/^(\d{1,2}:\d{2}:\d{2})\s*[—–-]\s*(.+)$/);
+        if (m) {
+          const ts = m[1].split(":")[0].length === 1 ? "0" + m[1] : m[1];
+          if (newTitlesMap.has(ts)) return `${ts} — ${newTitlesMap.get(ts)}`;
+        }
+        return line;
+      });
+      // Append any new timestamps not in existing titles
+      const existingTimestamps = new Set(existingLines.map((l) => {
+        const m = l.trim().match(/^(\d{1,2}:\d{2}:\d{2})/);
+        return m ? (m[1].split(":")[0].length === 1 ? "0" + m[1] : m[1]) : "";
+      }));
+      newTitlesMap.forEach((title, ts) => {
+        if (!existingTimestamps.has(ts)) result.push(`${ts} — ${title}`);
+      });
+    }
+    setChapterTitles(result.join("\n"));
     titlesUserEdited.current = true;
     toast.success(`${newTitlesMap.size} title${newTitlesMap.size > 1 ? "s" : ""} applied from chat`);
   }
@@ -244,7 +251,17 @@ export function FormatTranscript() {
     // Assemble final document: Links + Transcript + Footer
     let doc = "";
     if (links.trim()) {
-      const formattedLinks = links.trim().split("\n").filter((l) => l.trim()).join("\n\n");
+      // Normalize: rejoin URL-only lines back onto previous description line
+      const rawLines = links.trim().split("\n").filter((l) => l.trim());
+      const normalized: string[] = [];
+      for (const line of rawLines) {
+        if (/^https?:\/\//.test(line.trim()) && normalized.length > 0) {
+          normalized[normalized.length - 1] += line.trim();
+        } else {
+          normalized.push(line);
+        }
+      }
+      const formattedLinks = normalized.join("\n\n");
       doc += `# Links\n\n${formattedLinks}\n\n`;
     }
     doc += `# Transcript\n\n${transcript}`;
