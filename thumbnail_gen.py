@@ -51,6 +51,17 @@ from PIL import Image
 
 # ----- Config -----
 
+def _get_git_version():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=SCRIPT_DIR, stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        return "unknown"
+
+GIT_VERSION = _get_git_version()
+
 PORT = int(os.environ.get("PORT", 9200))
 APP_USER = os.environ.get("APP_USERNAME", "doom")
 APP_PASS = os.environ.get("APP_PASSWORD", "")
@@ -391,10 +402,7 @@ async def apply_border_pass(client, img_data):
                     BORDER_PASS_PROMPT,
                 ],
                 config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(
-                        aspect_ratio="16:9",
-                    ),
+                    response_modalities=["IMAGE", "TEXT"],
                 ),
             ),
             timeout=120,
@@ -405,7 +413,12 @@ async def apply_border_pass(client, img_data):
             for part in response.candidates[0].content.parts:
                 if part.inline_data and part.inline_data.data:
                     return part.inline_data.data
+        # Log if no image was returned
+        with status_lock:
+            status["log"].append(f"Border pass: no image in response")
     except Exception as e:
+        with status_lock:
+            status["log"].append(f"Border pass error: {str(e)[:150]}")
         print(f"Border pass failed: {e}")
     return None
 
@@ -2215,7 +2228,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
     <div id="resultsGrid" class="grid"></div>
   </div>
 
-  <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">doom-thumbnails v2.1 &middot; Full Episode border pass</div>
+  <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">__GIT_VERSION__</div>
 
 <script>
 let pollInterval = null;
@@ -3769,7 +3782,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(HTML_REVISION.encode("utf-8"))
+        self.wfile.write(HTML_REVISION.replace("__GIT_VERSION__", GIT_VERSION).encode("utf-8"))
 
     def _serve_descriptions_html(self):
         self.send_response(200)
