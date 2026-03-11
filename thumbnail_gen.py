@@ -401,13 +401,14 @@ def upload_border_reference(client):
     print(f"Uploaded {len(BORDER_REF_FILES)} border reference images.")
 
 
-async def apply_border_pass(client, img_data):
+async def apply_border_pass(client, img_data, prompt_override=None):
     """Second Gemini pass: add red border + DOOM DEBATES wordmark."""
     if not BORDER_REF_FILES:
         return None
     try:
+        prompt_text = prompt_override or BORDER_PASS_PROMPT
         source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
-        border_contents = list(BORDER_REF_FILES) + [source_img, BORDER_PASS_PROMPT]
+        border_contents = list(BORDER_REF_FILES) + [source_img, prompt_text]
         _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call")
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
@@ -814,7 +815,7 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                                 if status.get("add_border") and BORDER_REF_FILES:
                                     with status_lock:
                                         status["log"].append(f"thumb_{idx:03d}: applying border pass...")
-                                    border_result = await apply_border_pass(client, img_data)
+                                    border_result = await apply_border_pass(client, img_data, status.get("border_prompt"))
                                     if border_result:
                                         img_data = border_result
                                         with status_lock:
@@ -2221,7 +2222,13 @@ HTML_REVISION = r"""<!DOCTYPE html>
         <input type="checkbox" id="addBorderCheck">
         <span class="hint" style="margin:0;">Full Episode border</span>
       </label>
+      <button type="button" class="btn" style="background:#263b6a;font-size:12px;padding:6px 10px;" onclick="toggleBorderPrompt()">Edit Border Prompt</button>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
+    </div>
+    <div id="borderPromptWrap" style="display:none;margin-top:10px;">
+      <label class="hint" style="margin:0 0 4px;">Border pass prompt (sent to Gemini with the reference images):</label>
+      <textarea id="borderPromptText" style="width:100%;min-height:120px;background:#091630;color:#fff;border:1px solid #2a3f6b;border-radius:8px;padding:10px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></textarea>
+      <button type="button" class="btn" style="background:#263b6a;font-size:12px;padding:4px 10px;margin-top:4px;" onclick="resetBorderPrompt()">Reset to Default</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -2252,7 +2259,27 @@ let baseAttachmentFile = null;
 let pastedImages = [];
 let attachedImages = [];
 
+let defaultBorderPrompt = '';
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function toggleBorderPrompt() {
+  const wrap = document.getElementById('borderPromptWrap');
+  const ta = document.getElementById('borderPromptText');
+  if (wrap.style.display === 'none') {
+    wrap.style.display = 'block';
+    if (!ta.value) {
+      fetch('/border_prompt').then(r=>r.json()).then(d=>{
+        defaultBorderPrompt = d.text || '';
+        ta.value = defaultBorderPrompt;
+      });
+    }
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+function resetBorderPrompt() {
+  document.getElementById('borderPromptText').value = defaultBorderPrompt;
+}
 
 async function openLastApiCallWindow() {
   const w = window.open('', '_blank');
@@ -2507,6 +2534,8 @@ async function runRevision() {
   fd.append('prompt', feedback);
   fd.append('count', String(requestedCount));
   fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
+  const customBorderPrompt = (document.getElementById('borderPromptText') || {}).value || '';
+  if (customBorderPrompt) fd.append('border_prompt', customBorderPrompt);
 
   try {
     const resp = await fetch('/revise_upload', { method:'POST', body: fd });
@@ -3661,6 +3690,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with status_lock:
                 payload = status.get("last_border_api_call", "")
             self._json_response({"ok": True, "text": payload})
+        elif path == "/border_prompt":
+            self._json_response({"ok": True, "text": BORDER_PASS_PROMPT})
         elif path == "/image":
             self._serve_image(params.get("path", ""))
         elif path == "/download":
@@ -4280,6 +4311,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         )
 
         status["add_border"] = fields.get("add_border") == "1"
+        status["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
         run_generation(client, prompts, round_dir, "revision_page")
         with status_lock:
             base_src = "uploaded file" if base_files else "follow-up result"
