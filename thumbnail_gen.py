@@ -3761,6 +3761,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"Authentication required")
 
     def do_GET(self):
+        # Health check endpoint — no auth required (used for deploy monitoring)
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "version": GIT_VERSION}).encode())
+            return
         if not self._check_auth():
             self._send_auth_required()
             return
