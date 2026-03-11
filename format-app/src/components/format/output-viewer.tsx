@@ -1,8 +1,9 @@
 "use client";
 
-import { Check, ClipboardCopy, Download, FileText, MessageSquare, RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowDownToLine, Check, ClipboardCopy, Download, FileText, MessageSquare, RefreshCw, Send } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { stripChapterTitles } from "./utils/chunker";
+import type { TitlesChatMessage } from "./utils/types";
 
 interface OutputViewerProps {
   output: string;
@@ -12,6 +13,9 @@ interface OutputViewerProps {
   onChatAboutTitles: (instruction: string) => void;
   onReextractTitles: () => void;
   isChattingTitles: boolean;
+  titlesChatMessages: TitlesChatMessage[];
+  titlesChatStreaming: string;
+  onApplyTitlesFromChat: (content: string) => void;
   hasOutput: boolean;
   links: string;
   onReextractLinks: () => void;
@@ -43,7 +47,7 @@ function parseLinks(raw: string): { description: string; url: string }[] {
   }).filter(Boolean) as { description: string; url: string }[];
 }
 
-export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitlesChange, onChatAboutTitles, onReextractTitles, isChattingTitles, hasOutput, links, onReextractLinks, onReviseLinks, isExtractingLinks, finalDocument, onBuildFinalDocument }: OutputViewerProps) {
+export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitlesChange, onChatAboutTitles, onReextractTitles, isChattingTitles, titlesChatMessages, titlesChatStreaming, onApplyTitlesFromChat, hasOutput, links, onReextractLinks, onReviseLinks, isExtractingLinks, finalDocument, onBuildFinalDocument }: OutputViewerProps) {
   const [copiedTranscript, setCopiedTranscript] = useState(false);
   const [copiedChapters, setCopiedChapters] = useState(false);
   const [copiedLinks, setCopiedLinks] = useState(false);
@@ -51,6 +55,18 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
   const [titlesChatInput, setTitlesChatInput] = useState("");
   const [linksRevisionInput, setLinksRevisionInput] = useState("");
   const strippedOutput = useMemo(() => stripChapterTitles(output), [output]);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll chat to bottom on new messages
+  useEffect(() => {
+    if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+  }, [titlesChatMessages, titlesChatStreaming]);
+
+  function hasApplyableTitles(content: string): boolean {
+    if (/```titles\n[\s\S]*?```/.test(content)) return true;
+    const lines = content.split("\n").filter((l) => /^\d{1,2}:\d{2}:\d{2}\s*[—–-]/.test(l.trim()));
+    return lines.length >= 2;
+  }
 
   if (!output && !isStreaming && !hasOutput) return null;
 
@@ -110,7 +126,7 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Chapter Titles Pane */}
+      {/* Chapter Titles — 3-Pane Layout */}
       {(chapterTitles || hasOutput) && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex justify-between items-center px-5 py-3 border-b border-slate-100 bg-slate-50/60">
@@ -120,7 +136,7 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
                 {isChattingTitles && (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
                     <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
-                    Iterating
+                    Thinking
                   </span>
                 )}
               </div>
@@ -137,33 +153,76 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
               </SmallBtn>
             </div>
           </div>
-          <div className="p-4">
-            <textarea
-              value={chapterTitles}
-              onChange={(e) => onChapterTitlesChange(e.target.value)}
-              className="min-h-[7rem] w-full rounded-lg border border-slate-200 bg-slate-50 p-3.5 font-mono text-sm leading-relaxed text-slate-700 resize-y transition-colors placeholder:text-slate-400 disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
-              placeholder="Chapter titles will appear here after formatting..."
-              disabled={isChattingTitles}
-            />
-            <div className="mt-3 flex flex-col gap-2">
+          <div className="grid grid-cols-2 divide-x divide-slate-200">
+            {/* Left: Document (editable titles) */}
+            <div className="p-4">
+              <p className="text-[11px] font-medium text-slate-500 mb-2 uppercase tracking-wide">Document</p>
               <textarea
-                value={titlesChatInput}
-                onChange={(e) => setTitlesChatInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTitlesChat(); } }}
-                placeholder='e.g. "Make titles more descriptive" or "Combine the first two sections"'
-                className="w-full min-h-[3.5rem] rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 transition-colors disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 resize-y"
-                disabled={isChattingTitles || !chapterTitles}
-                rows={2}
+                value={chapterTitles}
+                onChange={(e) => onChapterTitlesChange(e.target.value)}
+                className="min-h-[12rem] w-full rounded-lg border border-slate-200 bg-slate-50 p-3.5 font-mono text-sm leading-relaxed text-slate-700 resize-y transition-colors placeholder:text-slate-400 disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                placeholder="Chapter titles will appear here after formatting..."
               />
-              <div className="flex justify-end">
-                <button
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  onClick={handleTitlesChat}
-                  disabled={isChattingTitles || !titlesChatInput.trim() || !chapterTitles}
-                >
-                  <MessageSquare className={`h-3.5 w-3.5 ${isChattingTitles ? "animate-pulse" : ""}`} />
-                  {isChattingTitles ? "Iterating..." : "Iterate with LLM"}
-                </button>
+            </div>
+            {/* Right: Chat (messages + prompt) */}
+            <div className="flex flex-col">
+              <div className="px-4 pt-4 pb-1">
+                <p className="text-[11px] font-medium text-slate-500 mb-2 uppercase tracking-wide">Chat</p>
+              </div>
+              {/* Chat messages */}
+              <div ref={chatScrollRef} className="flex-1 overflow-y-auto px-4 space-y-3 min-h-[8rem] max-h-[30vh]">
+                {titlesChatMessages.length === 0 && !titlesChatStreaming && (
+                  <p className="text-xs text-slate-400 italic py-4">Ask questions, brainstorm titles, or request revisions. The LLM has access to the full transcript.</p>
+                )}
+                {titlesChatMessages.map((msg, i) => (
+                  <div key={i} className={`text-sm leading-relaxed ${msg.role === "user" ? "text-slate-600" : "text-slate-800"}`}>
+                    <span className={`text-[10px] font-semibold uppercase tracking-wide ${msg.role === "user" ? "text-slate-400" : "text-indigo-500"}`}>
+                      {msg.role === "user" ? "You" : "Assistant"}
+                    </span>
+                    <div className="mt-0.5 whitespace-pre-wrap font-mono text-xs leading-relaxed">
+                      {msg.content}
+                    </div>
+                    {msg.role === "assistant" && hasApplyableTitles(msg.content) && (
+                      <button
+                        className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-emerald-50 border border-emerald-200 px-2 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100 transition-colors"
+                        onClick={() => onApplyTitlesFromChat(msg.content)}
+                      >
+                        <ArrowDownToLine className="h-3 w-3" />
+                        Apply these titles
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {titlesChatStreaming && (
+                  <div className="text-sm leading-relaxed text-slate-800">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">Assistant</span>
+                    <div className="mt-0.5 whitespace-pre-wrap font-mono text-xs leading-relaxed">
+                      {titlesChatStreaming}
+                      <span className="animate-pulse text-indigo-500">|</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Prompt input */}
+              <div className="p-3 border-t border-slate-100">
+                <div className="flex gap-2">
+                  <textarea
+                    value={titlesChatInput}
+                    onChange={(e) => setTitlesChatInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTitlesChat(); } }}
+                    placeholder="Ask about titles, brainstorm ideas..."
+                    className="flex-1 min-h-[2.5rem] max-h-[6rem] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 transition-colors disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 resize-y"
+                    disabled={isChattingTitles || !chapterTitles}
+                    rows={2}
+                  />
+                  <button
+                    className="self-end inline-flex items-center justify-center rounded-lg bg-indigo-500 p-2.5 text-white hover:bg-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={handleTitlesChat}
+                    disabled={isChattingTitles || !titlesChatInput.trim() || !chapterTitles}
+                  >
+                    <Send className={`h-4 w-4 ${isChattingTitles ? "animate-pulse" : ""}`} />
+                  </button>
+                </div>
               </div>
             </div>
           </div>

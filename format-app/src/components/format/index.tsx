@@ -9,7 +9,7 @@ import { PromptEditor } from "./prompt-editor";
 import { TranscriptInput } from "./transcript-input";
 import { chunkTranscript, extractChapterTitlesFormatted, extractSectionHeaders, stripChapterTitles } from "./utils/chunker";
 import { buildLinksRevisionSystemPrompt, buildLinksRevisionUserMessage, buildLinksSystemPrompt, buildLinksUserMessage, buildSystemPrompt, buildTitlesChatSystemPrompt, buildTitlesChatUserMessage, buildUserMessage, DEFAULT_PROMPT } from "./utils/prompt";
-import type { ChunkResult, FormatConfig, TranscriptChunk } from "./utils/types";
+import type { ChunkResult, FormatConfig, TitlesChatMessage, TranscriptChunk } from "./utils/types";
 
 export function FormatTranscript() {
   const [rawTranscript, setRawTranscript] = useState("");
@@ -23,6 +23,8 @@ export function FormatTranscript() {
   const [isChattingTitles, setIsChattingTitles] = useState(false);
   const [isExtractingLinks, setIsExtractingLinks] = useState(false);
   const [finalDocument, setFinalDocument] = useState("");
+  const [titlesChatMessages, setTitlesChatMessages] = useState<TitlesChatMessage[]>([]);
+  const [titlesChatStreaming, setTitlesChatStreaming] = useState("");
   const outputRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -54,7 +56,7 @@ export function FormatTranscript() {
   async function processAllChunks() {
     const parsedChunks = chunkTranscript(rawTranscript, config.chunkMinutes);
     if (parsedChunks.length === 0) { toast.error("No timestamps detected in transcript"); return; }
-    setIsProcessing(true); setChunks(parsedChunks); setChunkResults([]); outputRef.current = ""; setDisplayOutput(""); setChapterTitles(""); setLinks(""); setFinalDocument("");
+    setIsProcessing(true); setChunks(parsedChunks); setChunkResults([]); outputRef.current = ""; setDisplayOutput(""); setChapterTitles(""); setLinks(""); setFinalDocument(""); setTitlesChatMessages([]); setTitlesChatStreaming("");
     titlesUserEdited.current = false;
     const abort = new AbortController(); abortRef.current = abort;
     let context: { sectionsCompleted: string[]; lastLines: string } | undefined;
@@ -135,22 +137,45 @@ export function FormatTranscript() {
 
   async function chatAboutTitles(instruction: string) {
     if (!chapterTitles.trim() || !instruction.trim()) return;
+    const userMsg: TitlesChatMessage = { role: "user", content: instruction };
+    setTitlesChatMessages((prev) => [...prev, userMsg]);
     setIsChattingTitles(true);
+    setTitlesChatStreaming("");
     try {
+      const transcript = outputRef.current || displayOutput;
       const response = await fetch("/api/format-chunk", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systemPrompt: buildTitlesChatSystemPrompt(), userMessage: buildTitlesChatUserMessage(chapterTitles, instruction) }),
+        body: JSON.stringify({
+          systemPrompt: buildTitlesChatSystemPrompt(transcript, rawTranscript),
+          userMessage: buildTitlesChatUserMessage(titlesChatMessages, chapterTitles, instruction),
+        }),
       });
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       if (!response.body) throw new Error("No response body");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let result = "";
-      while (true) { const { done, value } = await reader.read(); if (done) break; result += decoder.decode(value, { stream: true }); }
-      setChapterTitles(result.trim());
-      titlesUserEdited.current = true;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        result += decoder.decode(value, { stream: true });
+        setTitlesChatStreaming(result);
+      }
+      setTitlesChatMessages((prev) => [...prev, { role: "assistant", content: result.trim() }]);
+      setTitlesChatStreaming("");
     } catch (err) {
       toast.error(`Title chat failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     }
     setIsChattingTitles(false);
+  }
+
+  function applyTitlesFromChat(content: string) {
+    // Extract titles from ```titles ... ``` block or from lines matching HH:MM:SS — Title
+    const fenceMatch = content.match(/```titles\n([\s\S]*?)```/);
+    const titlesText = fenceMatch ? fenceMatch[1].trim() : content;
+    const lines = titlesText.split("\n").filter((l) => /^\d{1,2}:\d{2}:\d{2}\s*[—–-]/.test(l.trim()));
+    if (lines.length === 0) { toast.error("No valid titles found in this message"); return; }
+    setChapterTitles(lines.join("\n"));
+    titlesUserEdited.current = true;
+    toast.success("Titles applied from chat");
   }
 
   function buildFinalDocument() {
@@ -212,6 +237,9 @@ export function FormatTranscript() {
         onChatAboutTitles={chatAboutTitles}
         onReextractTitles={reextractTitles}
         isChattingTitles={isChattingTitles}
+        titlesChatMessages={titlesChatMessages}
+        titlesChatStreaming={titlesChatStreaming}
+        onApplyTitlesFromChat={applyTitlesFromChat}
         hasOutput={hasOutput}
         links={links}
         onReextractLinks={() => { const t = outputRef.current || displayOutput; if (t) fetchLinks(t); }}

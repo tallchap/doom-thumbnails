@@ -95,17 +95,41 @@ export function buildLinksRevisionUserMessage(currentLinks: string, instructions
   return `[Current links]\n${currentLinks}\n\n[Revision instructions]\n${instructions}\n\n[Transcript for context]\n${fullTranscript}`;
 }
 
-export function buildTitlesChatSystemPrompt(): string {
-  return `You are a professional transcript editor helping refine chapter titles for a podcast/interview transcript. You will receive a list of chapter titles and the user's instructions for how to improve them.
+export function buildTitlesChatSystemPrompt(transcript: string, rawInput: string): string {
+  return `You are a professional transcript editor helping brainstorm and refine chapter titles for a podcast/interview transcript. You have access to the full formatted transcript and the original raw input for context.
 
-Rules:
-- Output ONLY the revised chapter titles, one per line, in the format: HH:MM:SS — Title
-- Keep timestamps exactly as they are — only modify the title text
-- Apply the user's instructions to improve, rename, reorganize, or refine the titles
-- Maintain the chronological order
-- No preamble, commentary, or formatting — just the title lines`;
+You can:
+- Suggest improved titles
+- Brainstorm alternatives
+- Explain why certain titles work better
+- Answer questions about the transcript content
+- Discuss section boundaries
+
+When suggesting revised titles, format them as:
+\`\`\`titles
+HH:MM:SS — Title
+HH:MM:SS — Title
+\`\`\`
+
+This lets the user easily apply your suggestions. Keep timestamps exactly as they are — only modify title text.
+
+Be conversational and helpful. You can mix discussion with title suggestions.
+
+[Formatted transcript for reference]
+${transcript}
+
+[Original raw input for reference]
+${rawInput.slice(0, 10000)}`;
 }
 
-export function buildTitlesChatUserMessage(currentTitles: string, instruction: string): string {
-  return `[Current chapter titles]\n${currentTitles}\n\n[Instructions]\n${instruction}`;
+export function buildTitlesChatUserMessage(chatHistory: { role: "user" | "assistant"; content: string }[], currentTitles: string, newMessage: string): string {
+  let msg = `[Current chapter titles]\n${currentTitles}\n\n`;
+  if (chatHistory.length > 0) {
+    msg += "[Conversation so far]\n";
+    for (const m of chatHistory) {
+      msg += `${m.role === "user" ? "User" : "Assistant"}: ${m.content}\n\n`;
+    }
+  }
+  msg += `User: ${newMessage}`;
+  return msg;
 }

@@ -20,3 +20,8 @@ export interface FormatConfig {
   chunkMinutes: number;
   prompt: string;
 }
+
+export interface TitlesChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
