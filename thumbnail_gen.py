@@ -398,7 +398,7 @@ async def apply_border_pass(client, img_data):
                 model=GEMINI_MODEL,
                 contents=[
                     BORDER_REF_FILE,
-                    types.Part.from_image(source_img),
+                    source_img,
                     BORDER_PASS_PROMPT,
                 ],
                 config=types.GenerateContentConfig(
