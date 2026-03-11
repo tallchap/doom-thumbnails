@@ -99,20 +99,32 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
     setTitlesChatInput("");
   }
 
+  function handleLinksRevise() {
+    if (!linksRevisionInput.trim() || isExtractingLinks) return;
+    onReviseLinks(linksRevisionInput);
+    setLinksRevisionInput("");
+  }
+
+  const modelTag = "claude-opus-4-6 · adaptive thinking · max effort";
+  const modelTagSearch = "claude-opus-4-6 · adaptive thinking · max effort · web search";
+
   return (
     <div className="flex flex-col gap-5">
       {/* Chapter Titles Pane */}
       {(chapterTitles || hasOutput) && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex justify-between items-center px-5 py-3 border-b border-slate-100 bg-slate-50/60">
-            <div className="flex items-center gap-2.5">
-              <span className="text-sm font-semibold text-slate-800">Chapter Titles</span>
-              {isChattingTitles && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
-                  Iterating
-                </span>
-              )}
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="text-sm font-semibold text-slate-800">Chapter Titles</span>
+                {isChattingTitles && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                    Iterating
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">{modelTag}</p>
             </div>
             <div className="flex gap-2">
               <SmallBtn onClick={copyChapters} disabled={!chapterTitles}>
@@ -133,24 +145,26 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
               placeholder="Chapter titles will appear here after formatting..."
               disabled={isChattingTitles}
             />
-            <div className="mt-3 flex gap-2">
-              <input
-                type="text"
+            <div className="mt-3 flex flex-col gap-2">
+              <textarea
                 value={titlesChatInput}
                 onChange={(e) => setTitlesChatInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleTitlesChat(); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleTitlesChat(); } }}
                 placeholder='e.g. "Make titles more descriptive" or "Combine the first two sections"'
-                className="flex-1 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 transition-colors disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                className="w-full min-h-[3.5rem] rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 transition-colors disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 resize-y"
                 disabled={isChattingTitles || !chapterTitles}
+                rows={2}
               />
-              <button
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                onClick={handleTitlesChat}
-                disabled={isChattingTitles || !titlesChatInput.trim() || !chapterTitles}
-              >
-                <MessageSquare className={`h-3.5 w-3.5 ${isChattingTitles ? "animate-pulse" : ""}`} />
-                {isChattingTitles ? "Iterating..." : "Iterate with LLM"}
-              </button>
+              <div className="flex justify-end">
+                <button
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  onClick={handleTitlesChat}
+                  disabled={isChattingTitles || !titlesChatInput.trim() || !chapterTitles}
+                >
+                  <MessageSquare className={`h-3.5 w-3.5 ${isChattingTitles ? "animate-pulse" : ""}`} />
+                  {isChattingTitles ? "Iterating..." : "Iterate with LLM"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -160,14 +174,17 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
       {(links || isExtractingLinks || hasOutput) && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex justify-between items-center px-5 py-3 border-b border-slate-100 bg-slate-50/60">
-            <div className="flex items-center gap-2.5">
-              <span className="text-sm font-semibold text-slate-800">Links</span>
-              {isExtractingLinks && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
-                  Extracting
-                </span>
-              )}
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="text-sm font-semibold text-slate-800">Links</span>
+                {isExtractingLinks && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                    Extracting
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">{modelTagSearch}</p>
             </div>
             <div className="flex gap-2">
               <SmallBtn onClick={copyLinks} disabled={!links}>
@@ -196,24 +213,26 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
             ) : (
               <p className="text-sm text-slate-400">Links will appear here after formatting...</p>
             )}
-            <div className="mt-3 flex gap-2">
-              <input
-                type="text"
+            <div className="mt-3 flex flex-col gap-2">
+              <textarea
                 value={linksRevisionInput}
                 onChange={(e) => setLinksRevisionInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && linksRevisionInput.trim() && !isExtractingLinks) { onReviseLinks(linksRevisionInput); setLinksRevisionInput(""); } }}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleLinksRevise(); } }}
                 placeholder='e.g. "Add a link for OpenAI" or "Remove the Amazon links"'
-                className="flex-1 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 transition-colors disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                className="w-full min-h-[3.5rem] rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-800 placeholder:text-slate-400 transition-colors disabled:opacity-50 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 resize-y"
                 disabled={isExtractingLinks || !links}
+                rows={2}
               />
-              <button
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                onClick={() => { onReviseLinks(linksRevisionInput); setLinksRevisionInput(""); }}
-                disabled={isExtractingLinks || !linksRevisionInput.trim() || !links}
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isExtractingLinks ? "animate-spin" : ""}`} />
-                Revise Links
-              </button>
+              <div className="flex justify-end">
+                <button
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3.5 py-2 text-xs font-medium text-white hover:bg-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  onClick={handleLinksRevise}
+                  disabled={isExtractingLinks || !linksRevisionInput.trim() || !links}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isExtractingLinks ? "animate-spin" : ""}`} />
+                  Revise Links
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -223,14 +242,17 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
       {(output || isStreaming) && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex justify-between items-center px-5 py-3 border-b border-slate-100 bg-slate-50/60">
-            <div className="flex items-center gap-2.5">
-              <span className="text-sm font-semibold text-slate-800">Full Transcript</span>
-              {isStreaming && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
-                  Streaming
-                </span>
-              )}
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="text-sm font-semibold text-slate-800">Full Transcript</span>
+                {isStreaming && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-600">
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                    Streaming
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-0.5">{modelTag}</p>
             </div>
             <div className="flex gap-2">
               <SmallBtn onClick={copyTranscript} disabled={!output}>
@@ -255,7 +277,10 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
       {hasOutput && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex justify-between items-center px-5 py-3 border-b border-slate-100 bg-slate-50/60">
-            <span className="text-sm font-semibold text-slate-800">Final Document</span>
+            <div>
+              <span className="text-sm font-semibold text-slate-800">Final Document</span>
+              <p className="text-[10px] text-slate-400 mt-0.5">assembled from above components</p>
+            </div>
             <div className="flex gap-2">
               <SmallBtn onClick={copyFinal} disabled={!finalDocument}>
                 {copiedFinal ? <Check className="h-3.5 w-3.5" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
