@@ -742,7 +742,7 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
     return prompts
 
 
-def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None):
+def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None, context_prompt=None):
     """Build revision prompts with custom instructions."""
     prompts = []
     mentions_liron = "liron" in (custom_prompt or "").lower()
@@ -760,7 +760,7 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
                 variation_seed=v + 1,
                 variation_total=count_per,
             )
-            contents = [prompt_text, img, REVISION_CONTEXT_PROMPT]
+            contents = [prompt_text, img, context_prompt or REVISION_CONTEXT_PROMPT]
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.extend(brand_sample)
@@ -2184,9 +2184,26 @@ HTML_REVISION = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <h1>Thumbnail Revision Page</h1>
-  <div class="subtitle">Model: <strong>gemini-3.1-flash-image-preview</strong></div>
-  <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+    <div>
+      <h1>Thumbnail Revision Page</h1>
+      <div class="subtitle">Model: <strong>gemini-3.1-flash-image-preview</strong></div>
+      <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
+    </div>
+    <button onclick="toggleSettings()" style="background:#263b6a;color:#fff;border:1px solid #0f3460;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;white-space:nowrap;">&#9881; Settings</button>
+  </div>
+
+  <div id="settingsPanel" class="card" style="display:none;border-color:#263b6a;margin-bottom:16px;">
+    <h3 style="margin-top:0;color:#8fb2ff;">Prompt Settings</h3>
+
+    <label class="hint" style="margin:0 0 4px;">Border Pass Prompt <span style="color:#555;">(used when "Full Episode border" is checked)</span></label>
+    <textarea id="borderPromptText" style="width:100%;min-height:100px;background:#091630;color:#fff;border:1px solid #2a3f6b;border-radius:8px;padding:10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-sizing:border-box;"></textarea>
+    <button type="button" class="btn" style="background:#263b6a;font-size:11px;padding:3px 8px;margin-top:4px;" onclick="resetBorderPrompt()">Reset to Default</button>
+
+    <label class="hint" style="margin:14px 0 4px 0;">Revision Context Prompt <span style="color:#555;">(appended to every revision call)</span></label>
+    <textarea id="revisionContextText" style="width:100%;min-height:100px;background:#091630;color:#fff;border:1px solid #2a3f6b;border-radius:8px;padding:10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-sizing:border-box;"></textarea>
+    <button type="button" class="btn" style="background:#263b6a;font-size:11px;padding:3px 8px;margin-top:4px;" onclick="resetRevisionContext()">Reset to Default</button>
+  </div>
 
   <div class="card base-card">
     <div class="section-kicker">STEP 1</div>
@@ -2222,13 +2239,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
         <input type="checkbox" id="addBorderCheck">
         <span class="hint" style="margin:0;">Full Episode border</span>
       </label>
-      <button type="button" class="btn" style="background:#263b6a;font-size:12px;padding:6px 10px;" onclick="toggleBorderPrompt()">Edit Border Prompt</button>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
-    </div>
-    <div id="borderPromptWrap" style="display:none;margin-top:10px;">
-      <label class="hint" style="margin:0 0 4px;">Border pass prompt (sent to Gemini with the reference images):</label>
-      <textarea id="borderPromptText" style="width:100%;min-height:120px;background:#091630;color:#fff;border:1px solid #2a3f6b;border-radius:8px;padding:10px;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"></textarea>
-      <button type="button" class="btn" style="background:#263b6a;font-size:12px;padding:4px 10px;margin-top:4px;" onclick="resetBorderPrompt()">Reset to Default</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -2262,23 +2273,33 @@ let attachedImages = [];
 let defaultBorderPrompt = '';
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function toggleBorderPrompt() {
-  const wrap = document.getElementById('borderPromptWrap');
-  const ta = document.getElementById('borderPromptText');
-  if (wrap.style.display === 'none') {
-    wrap.style.display = 'block';
-    if (!ta.value) {
+let defaultRevisionContext = '';
+let settingsLoaded = false;
+
+function toggleSettings() {
+  const panel = document.getElementById('settingsPanel');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    if (!settingsLoaded) {
+      settingsLoaded = true;
       fetch('/border_prompt').then(r=>r.json()).then(d=>{
         defaultBorderPrompt = d.text || '';
-        ta.value = defaultBorderPrompt;
+        if (!document.getElementById('borderPromptText').value) document.getElementById('borderPromptText').value = defaultBorderPrompt;
+      });
+      fetch('/revision_context_prompt').then(r=>r.json()).then(d=>{
+        defaultRevisionContext = d.text || '';
+        if (!document.getElementById('revisionContextText').value) document.getElementById('revisionContextText').value = defaultRevisionContext;
       });
     }
   } else {
-    wrap.style.display = 'none';
+    panel.style.display = 'none';
   }
 }
 function resetBorderPrompt() {
   document.getElementById('borderPromptText').value = defaultBorderPrompt;
+}
+function resetRevisionContext() {
+  document.getElementById('revisionContextText').value = defaultRevisionContext;
 }
 
 async function openLastApiCallWindow() {
@@ -2536,6 +2557,8 @@ async function runRevision() {
   fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
   const customBorderPrompt = (document.getElementById('borderPromptText') || {}).value || '';
   if (customBorderPrompt) fd.append('border_prompt', customBorderPrompt);
+  const customRevisionContext = (document.getElementById('revisionContextText') || {}).value || '';
+  if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
 
   try {
     const resp = await fetch('/revise_upload', { method:'POST', body: fd });
@@ -3692,6 +3715,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"ok": True, "text": payload})
         elif path == "/border_prompt":
             self._json_response({"ok": True, "text": BORDER_PASS_PROMPT})
+        elif path == "/revision_context_prompt":
+            self._json_response({"ok": True, "text": REVISION_CONTEXT_PROMPT})
         elif path == "/image":
             self._serve_image(params.get("path", ""))
         elif path == "/download":
@@ -4279,12 +4304,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             try:
                 real = os.path.realpath(base_path)
-                if not real.startswith(os.path.realpath(THUMBNAILS_DIR)) or not os.path.isfile(real):
-                    self._json_response({"error": "Invalid follow-up base image path"})
+                thumbs_real = os.path.realpath(THUMBNAILS_DIR)
+                if not real.startswith(thumbs_real):
+                    self._json_response({"error": f"Follow-up base path outside thumbnails dir: {base_path}"})
+                    return
+                if not os.path.isfile(real):
+                    self._json_response({"error": f"Follow-up base image not found on disk: {base_path}"})
                     return
                 base_img = Image.open(real).convert("RGB")
-            except Exception:
-                self._json_response({"error": "Could not load follow-up base image"})
+            except Exception as e:
+                self._json_response({"error": f"Could not load follow-up base image: {str(e)[:200]}"})
                 return
 
         client = get_client()
@@ -4301,6 +4330,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
+        custom_context = fields.get("revision_context_prompt", "").strip() or None
         prompts = build_revision_prompts(
             [base_img],
             status.get("speakers", []),
@@ -4308,6 +4338,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             count_per=count,
             idea_idx=revision_idea_idx,
             attachment_refs=attachment_refs if attachment_refs else None,
+            context_prompt=custom_context,
         )
 
         status["add_border"] = fields.get("add_border") == "1"
