@@ -216,7 +216,8 @@ export function FormatTranscript() {
     // Assemble final document: Links + Transcript + Footer
     let doc = "";
     if (links.trim()) {
-      doc += `# Links\n\n${links.trim()}\n\n`;
+      const formattedLinks = links.trim().split("\n").filter((l) => l.trim()).join("\n\n");
+      doc += `# Links\n\n${formattedLinks}\n\n`;
     }
     doc += `# Transcript\n\n${transcript}`;
     doc += `\n\n---\n\nDoom Debates\u2019 Mission is to raise mainstream awareness of imminent extinction from AGI and build the social infrastructure for high-quality debate.\n\nSupport the mission by subscribing to my Substack at [DoomDebates.com](https://doomdebates.com) and to [youtube.com/@DoomDebates](https://youtube.com/@DoomDebates), or to really take things to the next level: [Donate](https://doomdebates.com/donate) \uD83D\uDE4F`;
