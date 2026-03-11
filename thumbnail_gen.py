@@ -788,6 +788,11 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
 
     async def generate_one(idx, idea_idx, contents):
         async with sem:
+            # Check if cancelled before starting
+            with status_lock:
+                if status.get("cancel_requested"):
+                    status["log"].append(f"thumb_{idx:03d}: cancelled")
+                    return None
             for attempt in range(3):
                 try:
                     _record_api_call(GEMINI_MODEL, contents, phase=phase)
@@ -867,6 +872,9 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                     if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < 2:
                         wait = (2 ** attempt) + random.random()
                         with status_lock:
+                            if status.get("cancel_requested"):
+                                status["log"].append(f"thumb_{idx:03d}: cancelled")
+                                return None
                             status["log"].append(
                                 f"thumb_{idx:03d}: rate limited, retrying in {wait:.1f}s..."
                             )
@@ -890,6 +898,7 @@ def run_generation(client, prompts, output_dir, phase="round1"):
     global status
     with status_lock:
         status["running"] = True
+        status["cancel_requested"] = False
         status["phase"] = phase
         status["total"] = len(prompts)
         status["completed"] = 0
@@ -900,7 +909,7 @@ def run_generation(client, prompts, output_dir, phase="round1"):
             status["idea_groups"] = {}
             status["cost"] = 0.0
         elif phase == "revision_page":
-            # Keep prior revision-page outputs visible; append new runs after existing ones.
+            status["images"] = []
             status["idea_groups"] = {}
             status["cost"] = 0.0
         # session_cost is never reset — it accumulates for the entire session
@@ -2190,20 +2199,12 @@ HTML_REVISION = r"""<!DOCTYPE html>
       <div class="subtitle">Model: <strong>gemini-3.1-flash-image-preview</strong></div>
       <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
     </div>
-    <button onclick="toggleSettings()" style="background:#263b6a;color:#fff;border:1px solid #0f3460;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;white-space:nowrap;">&#9881; Settings</button>
+    <button onclick="openApiPreviewWindow()" style="background:#263b6a;color:#fff;border:1px solid #0f3460;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;white-space:nowrap;">Preview API Call</button>
   </div>
 
-  <div id="settingsPanel" class="card" style="display:none;border-color:#263b6a;margin-bottom:16px;">
-    <h3 style="margin-top:0;color:#8fb2ff;">Prompt Settings</h3>
-
-    <label class="hint" style="margin:0 0 4px;">Border Pass Prompt <span style="color:#555;">(used when "Full Episode border" is checked)</span></label>
-    <textarea id="borderPromptText" style="width:100%;min-height:100px;background:#091630;color:#fff;border:1px solid #2a3f6b;border-radius:8px;padding:10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-sizing:border-box;"></textarea>
-    <button type="button" class="btn" style="background:#263b6a;font-size:11px;padding:3px 8px;margin-top:4px;" onclick="resetBorderPrompt()">Reset to Default</button>
-
-    <label class="hint" style="margin:14px 0 4px 0;">Revision Context Prompt <span style="color:#555;">(appended to every revision call)</span></label>
-    <textarea id="revisionContextText" style="width:100%;min-height:100px;background:#091630;color:#fff;border:1px solid #2a3f6b;border-radius:8px;padding:10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;box-sizing:border-box;"></textarea>
-    <button type="button" class="btn" style="background:#263b6a;font-size:11px;padding:3px 8px;margin-top:4px;" onclick="resetRevisionContext()">Reset to Default</button>
-  </div>
+  <!-- Hidden textareas to hold custom prompt values (populated by preview pane) -->
+  <textarea id="borderPromptText" style="display:none;"></textarea>
+  <textarea id="revisionContextText" style="display:none;"></textarea>
 
   <div class="card base-card">
     <div class="section-kicker">STEP 1</div>
@@ -2240,6 +2241,7 @@ HTML_REVISION = r"""<!DOCTYPE html>
         <span class="hint" style="margin:0;">Full Episode border</span>
       </label>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
+      <button id="cancelBtn" class="btn" style="background:#ef4444;display:none;" onclick="cancelGeneration()">Cancel</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -2247,10 +2249,13 @@ HTML_REVISION = r"""<!DOCTYPE html>
   <div class="card">
     <h3 style="margin-top:0;">Live Logs</h3>
     <div id="logBox" class="logs"></div>
-    <div style="margin-top:8px; display:flex; gap:8px;">
-      <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
-      <button class="btn btn-sm" type="button" onclick="openBorderApiCallWindow()" style="background:#0f3460;">View border API prompt</button>
-    </div>
+    <details style="margin-top:8px;">
+      <summary style="color:#555;font-size:12px;cursor:pointer;">Debug: View actual API payloads</summary>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
+        <button class="btn btn-sm" type="button" onclick="openBorderApiCallWindow()" style="background:#0f3460;">View border API prompt</button>
+      </div>
+    </details>
     <div id="costText" class="costline"></div>
   </div>
 
@@ -2271,35 +2276,141 @@ let pastedImages = [];
 let attachedImages = [];
 
 let defaultBorderPrompt = '';
+let defaultRevisionContext = '';
+let defaultRevisionTemplate = '';
+let brandCount = 0;
+let borderCount = 0;
+let promptsLoaded = false;
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-let defaultRevisionContext = '';
-let settingsLoaded = false;
+function loadPromptDefaults() {
+  if (promptsLoaded) return Promise.resolve();
+  promptsLoaded = true;
+  return Promise.all([
+    fetch('/border_prompt').then(r=>r.json()).then(d=>{
+      defaultBorderPrompt = d.text || '';
+      if (!document.getElementById('borderPromptText').value) document.getElementById('borderPromptText').value = defaultBorderPrompt;
+    }),
+    fetch('/revision_context_prompt').then(r=>r.json()).then(d=>{
+      defaultRevisionContext = d.text || '';
+      if (!document.getElementById('revisionContextText').value) document.getElementById('revisionContextText').value = defaultRevisionContext;
+    }),
+    fetch('/revision_prompt_template').then(r=>r.json()).then(d=>{
+      defaultRevisionTemplate = d.text || '';
+      brandCount = d.brand_count || 0;
+      borderCount = d.border_count || 0;
+    }),
+  ]);
+}
 
-function toggleSettings() {
-  const panel = document.getElementById('settingsPanel');
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    if (!settingsLoaded) {
-      settingsLoaded = true;
-      fetch('/border_prompt').then(r=>r.json()).then(d=>{
-        defaultBorderPrompt = d.text || '';
-        if (!document.getElementById('borderPromptText').value) document.getElementById('borderPromptText').value = defaultBorderPrompt;
-      });
-      fetch('/revision_context_prompt').then(r=>r.json()).then(d=>{
-        defaultRevisionContext = d.text || '';
-        if (!document.getElementById('revisionContextText').value) document.getElementById('revisionContextText').value = defaultRevisionContext;
-      });
-    }
-  } else {
-    panel.style.display = 'none';
-  }
-}
-function resetBorderPrompt() {
-  document.getElementById('borderPromptText').value = defaultBorderPrompt;
-}
-function resetRevisionContext() {
-  document.getElementById('revisionContextText').value = defaultRevisionContext;
+function openApiPreviewWindow() {
+  loadPromptDefaults().then(() => {
+    const revisionContext = document.getElementById('revisionContextText').value || defaultRevisionContext;
+    const borderPrompt = document.getElementById('borderPromptText').value || defaultBorderPrompt;
+    const userPrompt = document.getElementById('feedback').value.trim() || '[your revision prompt will appear here]';
+    const addBorder = document.getElementById('addBorderCheck').checked;
+    const attachCount = pastedImages.length + attachedImages.length;
+
+    // Build the revision prompt preview with placeholders filled
+    const revisionPromptPreview = defaultRevisionTemplate
+      .replace('{custom_prompt}', userPrompt)
+      .replace('#{variation_seed}', '#N')
+      .replace('#{variation_total}', '#M');
+
+    const w = window.open('', '_blank', 'width=760,height=900,scrollbars=yes');
+    if (!w) { alert('Popup blocked. Please allow popups for this site.'); return; }
+    w.document.write(`<!doctype html><html><head><title>API Call Preview</title><style>
+      *{box-sizing:border-box}
+      body{margin:0;font-family:Inter,system-ui,sans-serif;background:#0b1224;color:#e8ecf3;padding:20px}
+      h2{margin:0 0 16px;color:#8fb2ff;font-size:18px}
+      h3{margin:24px 0 12px;color:#4ade80;font-size:15px;border-bottom:1px solid #1f2f57;padding-bottom:6px}
+      .block{margin:8px 0;border-radius:8px;padding:12px;font-size:13px;line-height:1.5}
+      .grey{background:#1a1a2e;color:#888;border:1px solid #333}
+      .editable{background:#091630;border:1px solid #4ade80}
+      .block-label{font-size:11px;font-weight:700;color:#6b7fa8;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+      pre{white-space:pre-wrap;word-break:break-word;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+      textarea{width:100%;min-height:120px;background:transparent;color:#fff;border:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;resize:vertical;outline:none;line-height:1.5}
+      .placeholder{color:#555;font-style:italic;padding:8px 0}
+      .btn-row{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
+      .btn{background:#4ade80;color:#06230f;border:none;border-radius:8px;padding:10px 18px;font-weight:700;cursor:pointer;font-size:14px}
+      .btn-reset{background:#263b6a;color:#fff;font-size:12px;padding:4px 10px;border:none;border-radius:6px;cursor:pointer;margin-top:4px}
+      .hidden{display:none}
+      .note{font-size:11px;color:#555;margin-top:4px}
+    </style></head><body>
+      <h2>API Call Preview</h2>
+
+      <h3>Revision Call &mdash; Contents[]</h3>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[1] &mdash; Revision Prompt (template, auto-filled)</div>
+        <pre>${esc(revisionPromptPreview)}</pre>
+      </div>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[2] &mdash; Source Thumbnail</div>
+        <div class="placeholder">[Base Thumbnail Image]</div>
+      </div>
+
+      <div class="block editable">
+        <div class="block-label">CONTENT[3] &mdash; Revision Context (editable)</div>
+        <textarea id="prevCtx">${esc(revisionContext)}</textarea>
+        <button class="btn-reset" onclick="document.getElementById('prevCtx').value=defaultCtx">Reset to Default</button>
+      </div>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[4&ndash;${3 + brandCount}] &mdash; Brand References</div>
+        <div class="placeholder">${brandCount} brand reference images (random selection from uploaded set)</div>
+      </div>
+
+      <div class="block grey ${attachCount ? '' : 'hidden'}" id="attachBlock">
+        <div class="block-label">CONTENT[${4 + brandCount}] &mdash; User-Attached References</div>
+        <div class="placeholder">${attachCount} user-attached reference image(s)</div>
+      </div>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[last] &mdash; Liron References (conditional)</div>
+        <div class="placeholder">Only included if prompt mentions "liron" (up to 2 images)</div>
+      </div>
+
+      <h3 id="borderHeader" class="${addBorder ? '' : 'hidden'}">Border Pass Call &mdash; Contents[]</h3>
+
+      <div id="borderSection" class="${addBorder ? '' : 'hidden'}">
+        <div class="block grey">
+          <div class="block-label">CONTENT[1&ndash;${borderCount}] &mdash; Border Reference Images</div>
+          <div class="placeholder">${borderCount} border reference images from assets/</div>
+        </div>
+
+        <div class="block grey">
+          <div class="block-label">CONTENT[${borderCount + 1}] &mdash; Generated Thumbnail</div>
+          <div class="placeholder">[Output from revision call above]</div>
+        </div>
+
+        <div class="block editable">
+          <div class="block-label">CONTENT[${borderCount + 2}] &mdash; Border Pass Prompt (editable)</div>
+          <textarea id="prevBorder">${esc(borderPrompt)}</textarea>
+          <button class="btn-reset" onclick="document.getElementById('prevBorder').value=defaultBorder">Reset to Default</button>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn" onclick="applyAndClose()">Save &amp; Close</button>
+      </div>
+      <div class="note">Editable fields (green border) will be used in the next generation. Grey blocks are system-managed.</div>
+
+      <script>
+        const defaultCtx = ${JSON.stringify(defaultRevisionContext)};
+        const defaultBorder = ${JSON.stringify(defaultBorderPrompt)};
+        function applyAndClose() {
+          if (window.opener) {
+            window.opener.document.getElementById('revisionContextText').value = document.getElementById('prevCtx').value;
+            window.opener.document.getElementById('borderPromptText').value = document.getElementById('prevBorder') ? document.getElementById('prevBorder').value : '';
+          }
+          window.close();
+        }
+      </script>
+    </body></html>`);
+    w.document.close();
+  });
 }
 
 async function openLastApiCallWindow() {
@@ -2526,6 +2637,13 @@ function clearFollowUpBase() {
   renderAttachmentsPreview();
 }
 
+async function cancelGeneration() {
+  try {
+    await fetch('/cancel', { method: 'POST' });
+    document.getElementById('statusText').textContent = 'Cancelling...';
+  } catch(e) {}
+}
+
 async function runRevision() {
   const feedback = document.getElementById('feedback').value.trim();
   if (!feedback) { alert('Enter revision feedback.'); return; }
@@ -2539,9 +2657,14 @@ async function runRevision() {
   const countInput = document.getElementById('genCount');
   const requestedCount = Math.max(1, Math.min(50, parseInt((countInput && countInput.value) || '10', 10) || 10));
 
+  // Clear old results for new run
+  seen = new Set();
+  document.getElementById('resultsGrid').innerHTML = '';
+
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
   btn.textContent = 'Starting...';
+  document.getElementById('cancelBtn').style.display = '';
   document.getElementById('statusText').textContent = 'Submitting revision request...';
 
   const fd = new FormData();
@@ -2628,6 +2751,7 @@ function startPolling() {
       if (d.done && !d.running) {
         clearInterval(pollInterval);
         pollInterval = null;
+        document.getElementById('cancelBtn').style.display = 'none';
       }
     } catch (_) {}
   }, 1000);
@@ -3717,6 +3841,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"ok": True, "text": BORDER_PASS_PROMPT})
         elif path == "/revision_context_prompt":
             self._json_response({"ok": True, "text": REVISION_CONTEXT_PROMPT})
+        elif path == "/revision_prompt_template":
+            self._json_response({"ok": True, "text": REVISION_PROMPT, "brand_count": len(BRAND_FILES), "border_count": len(BORDER_REF_FILES)})
         elif path == "/image":
             self._serve_image(params.get("path", ""))
         elif path == "/download":
@@ -3850,6 +3976,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._handle_revise_post(body)
             elif path == "/generate_descriptions":
                 self._handle_generate_descriptions(body)
+            elif path == "/cancel":
+                with status_lock:
+                    if status.get("running"):
+                        status["cancel_requested"] = True
+                        status["log"].append("Cancel requested — waiting for in-flight API calls to finish...")
+                        self._json_response({"ok": True, "message": "Cancel requested"})
+                    else:
+                        self._json_response({"ok": True, "message": "Nothing running"})
             else:
                 self.send_error(404)
         except Exception as e:
