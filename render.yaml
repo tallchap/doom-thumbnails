@@ -11,6 +11,10 @@ services:
         sync: false
       - key: BRAVE_API_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: NO_BROWSER
         value: "1"
       - key: AWS_ACCESS_KEY_ID
