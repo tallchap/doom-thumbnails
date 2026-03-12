@@ -8,6 +8,10 @@ export function parseTimestampToSeconds(line: string): number | null {
     const c = bracketMatch[3] ? parseInt(bracketMatch[3]) : null;
     return c !== null ? a * 3600 + b * 60 + c : a * 60 + b;
   }
+  const srtMatch = line.match(/^(\d{1,2}):(\d{2}):(\d{2})[,.]?\d*\s*-->/);
+  if (srtMatch) {
+    return parseInt(srtMatch[1]) * 3600 + parseInt(srtMatch[2]) * 60 + parseInt(srtMatch[3]);
+  }
   const decimalMatch = line.match(/^(\d+(?:\.\d+)):/);
   if (decimalMatch) return parseFloat(decimalMatch[1]);
   return null;
