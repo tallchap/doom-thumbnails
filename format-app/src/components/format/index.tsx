@@ -7,7 +7,7 @@ import { ChunkProgress } from "./chunk-progress";
 import { OutputViewer } from "./output-viewer";
 import { PromptEditor } from "./prompt-editor";
 import { TranscriptInput } from "./transcript-input";
-import { chunkTranscript, extractChapterTitlesFormatted, extractSectionHeaders, stripChapterTitles } from "./utils/chunker";
+import { chunkTranscript, extractChapterTitlesFormatted, extractSectionHeaders } from "./utils/chunker";
 import { buildLinksChatSystemPrompt, buildLinksChatUserMessage, buildLinksSystemPrompt, buildLinksUserMessage, buildSystemPrompt, buildTitlesChatSystemPrompt, buildTitlesChatUserMessage, buildUserMessage, DEFAULT_PROMPT } from "./utils/prompt";
 import type { ChunkResult, FormatConfig, ChatMessage, TranscriptChunk } from "./utils/types";
 

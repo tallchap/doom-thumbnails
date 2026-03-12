@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownToLine, Check, ClipboardCopy, Download, FileText, MessageSquare, RefreshCw, Send } from "lucide-react";
+import { ArrowDownToLine, Check, ClipboardCopy, Download, FileText, RefreshCw, Send } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { stripChapterTitles } from "./utils/chunker";
 import type { ChatMessage } from "./utils/types";
@@ -52,6 +52,7 @@ function parseLinks(raw: string): { description: string; url: string }[] {
   }).filter(Boolean) as { description: string; url: string }[];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitlesChange, onChatAboutTitles, onReextractTitles, isChattingTitles, titlesChatMessages, titlesChatStreaming, onApplyTitlesFromChat, hasOutput, links, onLinksChange, onReextractLinks, onChatAboutLinks, onApplyLinksFromChat, isExtractingLinks, isChattingLinks, linksChatMessages, linksChatStreaming, finalDocument, onBuildFinalDocument }: OutputViewerProps) {
   const [copiedTranscript, setCopiedTranscript] = useState(false);
   const [copiedChapters, setCopiedChapters] = useState(false);
