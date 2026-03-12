@@ -2183,6 +2183,7 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
+<div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">__GIT_VERSION__</div>
 </body>
 </html>"""
 
@@ -4040,7 +4041,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(HTML.encode("utf-8"))
+        self.wfile.write(HTML.replace("__GIT_VERSION__", GIT_VERSION).encode("utf-8"))
 
     def _serve_revision_html(self):
         self.send_response(200)
