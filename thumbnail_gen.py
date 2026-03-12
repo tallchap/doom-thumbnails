@@ -1349,6 +1349,9 @@ HTML = r"""<!DOCTYPE html>
   <div class="section-header">
     <h2><span class="step-num">1</span> Episode Info</h2>
   </div>
+  <div style="margin-bottom:16px;">
+    <button class="btn" style="background:#7c3aed;width:100%;font-size:15px;padding:12px;" onclick="quickStart()">&#9889; Quick Start: Liron vs Daniel Kokotajlo — AI Doom Debate</button>
+  </div>
 
   <div class="mb">
     <label class="section">Episode Title <span class="tag tag-required">Required</span></label>
@@ -1398,9 +1401,6 @@ HTML = r"""<!DOCTYPE html>
   <div class="btn-row">
     <button class="btn btn-secondary" id="gatherBtn" onclick="gatherSourceImages()">Gather Source Images from Web</button>
     <button class="btn btn-primary" id="skipToIdeasBtn" onclick="skipToIdeas()">Skip to Generate Ideas</button>
-  </div>
-  <div style="margin-top:16px;padding-top:16px;border-top:1px solid #1f2f57;">
-    <button class="btn" style="background:#7c3aed;width:100%;font-size:15px;padding:12px;" onclick="quickStart()">&#9889; Quick Start: Liron vs Daniel Kokotajlo — AI Doom Debate</button>
   </div>
 </div>
 
