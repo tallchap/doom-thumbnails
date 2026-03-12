@@ -689,23 +689,32 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
                 custom_prompt_section=custom_section,
                 brand_guide=BRAND_GUIDE,
                 speaker_section=speaker_section,
-                liron_section=liron_section,
+                liron_section="",  # Liron instruction now lives adjacent to images below
                 additional_instructions=addl,
                 variation_seed=v + 1,
                 variation_total=variations_per,
             )
             contents = [prompt_text]
 
+            # Liron refs — placed IMMEDIATELY after prompt so the face-match
+            # instruction is adjacent to the reference photos
+            if selected_liron_refs:
+                contents.append(
+                    "In this image, you must make one of the faces look like Liron Shapira. "
+                    "Liron Shapira looks like the following enclosed images:"
+                )
+                for lf in selected_liron_refs:
+                    contents.append(lf)
+                contents.append(
+                    "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
+                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                    "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
+                )
+
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
                 contents.extend(brand_sample)
-
-            if selected_liron_refs:
-                contents.append(f"=== LIRON SHAPIRA (HOST) REFERENCE PHOTOS — targeted subset ({len(selected_liron_refs)} image(s)) from the Liron library. His face in your output MUST match these photos exactly. ===")
-                for i, lf in enumerate(selected_liron_refs):
-                    contents.append(f"[Liron photo {i+1} of {len(selected_liron_refs)}]")
-                    contents.append(lf)
 
             if selected_speaker_refs:
                 contents.append("=== SPEAKER PHOTOS — targeted subset; the thumbnail MUST use these people's real faces ===")
@@ -773,16 +782,27 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
                 variation_seed=v + 1,
                 variation_total=count_per,
             )
-            contents = [prompt_text, img, context_prompt or REVISION_CONTEXT_PROMPT]
+            contents = [prompt_text, img]
+            # Liron refs — placed right after base image so face-match
+            # instruction is adjacent to reference photos
+            if selected_liron_refs:
+                contents.append(
+                    "In this image, you must make one of the faces look like Liron Shapira. "
+                    "Liron Shapira looks like the following enclosed images:"
+                )
+                contents.extend(selected_liron_refs)
+                contents.append(
+                    "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
+                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                    "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
+                )
+            contents.append(context_prompt or REVISION_CONTEXT_PROMPT)
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.extend(brand_sample)
             if attachment_refs:
                 contents.append("The user has attached the following reference image(s) — use them to guide the revision:")
                 contents.extend(attachment_refs)
-            if liron_instruction:
-                contents.append(liron_instruction)
-                contents.extend(selected_liron_refs)
             prompts.append((idea_idx, v, contents))
     return prompts
 
