@@ -318,7 +318,7 @@ BORDER_PASS_PROMPT = """Take this thumbnail image and add a "Full Episode" borde
 # Keep identity/style references intentionally small and targeted per request.
 MAX_BRAND_REFS_PER_CALL = 3
 MAX_SPEAKER_REFS_PER_CALL = 4
-MAX_LIRON_REFS_PER_CALL = 2
+MAX_LIRON_REFS_PER_CALL = 4
 
 
 def get_client():
