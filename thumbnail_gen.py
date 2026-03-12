@@ -585,7 +585,11 @@ def _build_description_prompt(title, primary_description, revise_instructions, t
 
 def generate_description_gemini(client, prompt):
     _record_api_call(DESCRIPTION_MODEL, prompt, phase="description_generation_gemini")
-    response = client.models.generate_content(model=DESCRIPTION_MODEL, contents=prompt)
+    response = client.models.generate_content(
+        model=DESCRIPTION_MODEL,
+        contents=prompt,
+        config={"http_options": {"timeout": 120_000}},
+    )
     return (response.text or "").strip()
 
 
@@ -4219,20 +4223,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ("GPT", lambda: generate_description_gpt(prompt)),
             ]
 
-            for name, fn in providers:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _run_provider(name, fn):
                 with status_lock:
                     status["log"].append(f"{name} generation started")
                 try:
                     output = fn()
                 except Exception as e:
                     output = f"[{name} error] {str(e)[:260]}"
-                outputs.append(output)
                 out_chars = len(output or "")
                 with status_lock:
                     status["desc_calls"] = status.get("desc_calls", 0) + 1
                     status["desc_input_chars"] = status.get("desc_input_chars", 0) + in_chars
                     status["desc_output_chars"] = status.get("desc_output_chars", 0) + out_chars
                     status["log"].append(f"{name} generation done (in={in_chars} chars, out={out_chars} chars)")
+                return output
+
+            results = {}
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_run_provider, name, fn): name for name, fn in providers}
+                for future in as_completed(futures, timeout=130):
+                    name = futures[future]
+                    try:
+                        results[name] = future.result(timeout=5)
+                    except Exception as e:
+                        results[name] = f"[{name} timed out] {str(e)[:200]}"
+            outputs = [results.get(name, f"[{name} timed out]") for name, _ in providers]
 
             with status_lock:
                 status["running"] = False
