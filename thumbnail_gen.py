@@ -3027,6 +3027,7 @@ async function generateDescriptions() {
 
 fetch('/status').then(r => r.json()).then((d) => { renderUsage(d); renderLogs(d); }).catch(() => {});
 </script>
+<div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">__GIT_VERSION__</div>
 </body>
 </html>"""
 
@@ -4065,7 +4066,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        self.wfile.write(HTML_DESCRIPTIONS.encode("utf-8"))
+        self.wfile.write(HTML_DESCRIPTIONS.replace("__GIT_VERSION__", GIT_VERSION).encode("utf-8"))
 
     def _serve_face_capture_html(self):
         html = HTML_FACE_CAPTURE.replace(
