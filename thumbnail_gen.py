@@ -27,13 +27,10 @@ import threading
 import urllib.parse
 import webbrowser
 
-# Lock for thread-safe access to the shared `status` dict.
-# The background generation thread mutates status["images"],
-# status["idea_groups"], status["log"], etc. while the HTTP
-# handler reads them for JSON serialization.  Without the lock,
-# dict iteration during json.dumps can raise RuntimeError when
-# a new key is added to idea_groups concurrently.
-status_lock = threading.Lock()
+# status_lock is an alias for main_status_lock (set after State section).
+# Kept so that code outside the main/revision split (descriptions, etc.)
+# continues to work without changes.
+status_lock = threading.Lock()  # placeholder; reassigned below
 
 import boto3
 import cv2
@@ -219,30 +216,42 @@ You are currently working on Variation #{variation_seed} out of #{variation_tota
 
 # ----- State -----
 
-status = {
-    "running": False,
-    "phase": "idle",
-    "total": 0,
-    "completed": 0,
-    "errors": 0,
-    "log": [],
-    "images": [],
-    "done": False,
-    "output_dir": "",
-    "episode_dir": "",
-    "speakers": [],
-    "sources": [],
-    "round_num": 0,
-    "ideas": [],
-    "idea_groups": {},
-    "cost": 0.0,
-    "session_cost": 0.0,
-    "last_api_call": "",
-    "last_border_api_call": "",
-    "desc_calls": 0,
-    "desc_input_chars": 0,
-    "desc_output_chars": 0,
-}
+def _make_status():
+    """Create a fresh status dict. Main page and revision page each get one."""
+    return {
+        "running": False,
+        "phase": "idle",
+        "total": 0,
+        "completed": 0,
+        "errors": 0,
+        "log": [],
+        "images": [],
+        "done": False,
+        "output_dir": "",
+        "episode_dir": "",
+        "speakers": [],
+        "sources": [],
+        "round_num": 0,
+        "ideas": [],
+        "idea_groups": {},
+        "cost": 0.0,
+        "session_cost": 0.0,
+        "last_api_call": "",
+        "last_border_api_call": "",
+        "desc_calls": 0,
+        "desc_input_chars": 0,
+        "desc_output_chars": 0,
+    }
+
+# Separate status dicts so main page and revision page can run simultaneously
+main_status = _make_status()
+main_status_lock = threading.Lock()
+revision_status = _make_status()
+revision_status_lock = threading.Lock()
+
+# Legacy aliases for code that still references the old globals (descriptions page, etc.)
+status = main_status
+status_lock = main_status_lock
 
 fc_status = {"running": False, "log": [], "done": False, "output_dir": "", "result_dirs": {}}
 
@@ -276,7 +285,7 @@ def _serialize_for_debug(obj):
     return repr(obj)
 
 
-def _record_api_call(model, contents, phase="", key="last_api_call"):
+def _record_api_call(model, contents, phase="", key="last_api_call", target_status=None, target_lock=None):
     """Store last outbound API call payload for UI inspection."""
     ts = datetime.datetime.now().isoformat()
     payload = _serialize_for_debug(contents)
@@ -286,8 +295,10 @@ def _record_api_call(model, contents, phase="", key="last_api_call"):
         f"model: {model}\n"
         f"\n===== CONTENTS =====\n{payload}\n"
     )
-    with status_lock:
-        status[key] = text
+    _st = target_status if target_status is not None else status
+    _lk = target_lock if target_lock is not None else status_lock
+    with _lk:
+        _st[key] = text
 
 # ----- API Client & File API -----
 
@@ -401,15 +412,17 @@ def upload_border_reference(client):
     print(f"Uploaded {len(BORDER_REF_FILES)} border reference images.")
 
 
-async def apply_border_pass(client, img_data, prompt_override=None):
+async def apply_border_pass(client, img_data, prompt_override=None, target_status=None, target_lock=None):
     """Second Gemini pass: add red border + DOOM DEBATES wordmark."""
+    _st = target_status if target_status is not None else main_status
+    _lk = target_lock if target_lock is not None else main_status_lock
     if not BORDER_REF_FILES:
         return None
     try:
         prompt_text = prompt_override or BORDER_PASS_PROMPT
         source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
         border_contents = list(BORDER_REF_FILES) + [source_img, prompt_text]
-        _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call")
+        _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call", target_status=_st, target_lock=_lk)
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model=GEMINI_MODEL,
@@ -427,11 +440,11 @@ async def apply_border_pass(client, img_data, prompt_override=None):
                 if part.inline_data and part.inline_data.data:
                     return part.inline_data.data
         # Log if no image was returned
-        with status_lock:
-            status["log"].append(f"Border pass: no image in response")
+        with _lk:
+            _st["log"].append(f"Border pass: no image in response")
     except Exception as e:
-        with status_lock:
-            status["log"].append(f"Border pass error: {str(e)[:150]}")
+        with _lk:
+            _st["log"].append(f"Border pass error: {str(e)[:150]}")
         print(f"Border pass failed: {e}")
     return None
 
@@ -777,25 +790,26 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
 # ----- Async Generation -----
 
 
-async def generate_batch(client, prompts, output_dir, phase="round1"):
+async def generate_batch(client, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
     """Fire parallel Gemini API calls and save results.
     prompts is a list of (idea_idx, variation_num, contents)."""
-    global status
+    _st = target_status if target_status is not None else main_status
+    _lk = target_lock if target_lock is not None else main_status_lock
     os.makedirs(output_dir, exist_ok=True)
     sem = asyncio.Semaphore(MAX_CONCURRENT)
-    with status_lock:
-        start_idx = len(status["images"])
+    with _lk:
+        start_idx = len(_st["images"])
 
     async def generate_one(idx, idea_idx, contents):
         async with sem:
             # Check if cancelled before starting
-            with status_lock:
-                if status.get("cancel_requested"):
-                    status["log"].append(f"thumb_{idx:03d}: cancelled")
+            with _lk:
+                if _st.get("cancel_requested"):
+                    _st["log"].append(f"thumb_{idx:03d}: cancelled")
                     return None
             for attempt in range(3):
                 try:
-                    _record_api_call(GEMINI_MODEL, contents, phase=phase)
+                    _record_api_call(GEMINI_MODEL, contents, phase=phase, target_status=_st, target_lock=_lk)
                     response = await asyncio.wait_for(
                         client.aio.models.generate_content(
                             model=GEMINI_MODEL,
@@ -817,28 +831,28 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                                 img_data = part.inline_data.data
 
                                 # Second Gemini pass: add border if enabled
-                                if status.get("add_border") and BORDER_REF_FILES:
-                                    with status_lock:
-                                        status["log"].append(f"thumb_{idx:03d}: applying border pass...")
-                                    border_result = await apply_border_pass(client, img_data, status.get("border_prompt"))
+                                if _st.get("add_border") and BORDER_REF_FILES:
+                                    with _lk:
+                                        _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
+                                    border_result = await apply_border_pass(client, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk)
                                     if border_result:
                                         img_data = border_result
-                                        with status_lock:
-                                            status["cost"] += COST_PER_IMAGE
-                                            status["session_cost"] += COST_PER_IMAGE
+                                        with _lk:
+                                            _st["cost"] += COST_PER_IMAGE
+                                            _st["session_cost"] += COST_PER_IMAGE
                                     else:
-                                        with status_lock:
-                                            status["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
+                                        with _lk:
+                                            _st["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
 
                                 filename = f"thumb_{idx:03d}.png"
                                 filepath = os.path.join(output_dir, filename)
                                 img = Image.open(io.BytesIO(img_data))
                                 img.save(filepath, "PNG")
 
-                                with status_lock:
-                                    status["completed"] += 1
-                                    status["cost"] += COST_PER_IMAGE
-                                    status["session_cost"] += COST_PER_IMAGE
+                                with _lk:
+                                    _st["completed"] += 1
+                                    _st["cost"] += COST_PER_IMAGE
+                                    _st["session_cost"] += COST_PER_IMAGE
                                     img_entry = {
                                         "idx": idx,
                                         "path": filepath,
@@ -846,43 +860,43 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
                                         "status": "ok",
                                         "idea_idx": idea_idx,
                                     }
-                                    status["images"].append(img_entry)
+                                    _st["images"].append(img_entry)
 
                                     if idea_idx >= 0:
-                                        status["idea_groups"].setdefault(idea_idx, []).append(img_entry)
+                                        _st["idea_groups"].setdefault(idea_idx, []).append(img_entry)
 
-                                    status["log"].append(
-                                        f"[{status['completed']}/{status['total']}] thumb_{idx:03d}.png OK"
+                                    _st["log"].append(
+                                        f"[{_st['completed']}/{_st['total']}] thumb_{idx:03d}.png OK"
                                     )
                                 return filepath
 
-                    with status_lock:
-                        status["errors"] += 1
-                        status["log"].append(f"thumb_{idx:03d}: no image in response")
+                    with _lk:
+                        _st["errors"] += 1
+                        _st["log"].append(f"thumb_{idx:03d}: no image in response")
                     return None
 
                 except asyncio.TimeoutError:
-                    with status_lock:
-                        status["errors"] += 1
-                        status["log"].append(f"thumb_{idx:03d}: timed out after 120s")
+                    with _lk:
+                        _st["errors"] += 1
+                        _st["log"].append(f"thumb_{idx:03d}: timed out after 120s")
                     return None
 
                 except Exception as e:
                     err = str(e)
                     if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < 2:
                         wait = (2 ** attempt) + random.random()
-                        with status_lock:
-                            if status.get("cancel_requested"):
-                                status["log"].append(f"thumb_{idx:03d}: cancelled")
+                        with _lk:
+                            if _st.get("cancel_requested"):
+                                _st["log"].append(f"thumb_{idx:03d}: cancelled")
                                 return None
-                            status["log"].append(
+                            _st["log"].append(
                                 f"thumb_{idx:03d}: rate limited, retrying in {wait:.1f}s..."
                             )
                         await asyncio.sleep(wait)
                         continue
-                    with status_lock:
-                        status["errors"] += 1
-                        status["log"].append(f"thumb_{idx:03d}: ERROR — {err[:120]}")
+                    with _lk:
+                        _st["errors"] += 1
+                        _st["log"].append(f"thumb_{idx:03d}: ERROR — {err[:120]}")
                     return None
 
     tasks = [
@@ -893,49 +907,49 @@ async def generate_batch(client, prompts, output_dir, phase="round1"):
     return [r for r in results if r]
 
 
-def run_generation(client, prompts, output_dir, phase="round1"):
+def run_generation(client, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
     """Run async generation in a background thread."""
-    global status
-    with status_lock:
-        status["running"] = True
-        status["cancel_requested"] = False
-        status["phase"] = phase
-        status["total"] = len(prompts)
-        status["completed"] = 0
-        status["errors"] = 0
-        status["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
+    _st = target_status if target_status is not None else main_status
+    _lk = target_lock if target_lock is not None else main_status_lock
+    with _lk:
+        _st["running"] = True
+        _st["cancel_requested"] = False
+        _st["phase"] = phase
+        _st["total"] = len(prompts)
+        _st["completed"] = 0
+        _st["errors"] = 0
+        _st["log"] = [f"Starting {phase}: generating {len(prompts)} thumbnails..."]
         if phase == "round1":
-            status["images"] = []
-            status["idea_groups"] = {}
-            status["cost"] = 0.0
+            _st["images"] = []
+            _st["idea_groups"] = {}
+            _st["cost"] = 0.0
         elif phase == "revision_page":
             # Keep prior revision-page outputs visible; append new runs after existing ones.
-            status["idea_groups"] = {}
-            status["cost"] = 0.0
+            _st["idea_groups"] = {}
+            _st["cost"] = 0.0
         # session_cost is never reset — it accumulates for the entire session
-        status["done"] = False
-        status["output_dir"] = output_dir
+        _st["done"] = False
+        _st["output_dir"] = output_dir
 
     def _run():
-        global status
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             results = loop.run_until_complete(
-                generate_batch(client, prompts, output_dir, phase)
+                generate_batch(client, prompts, output_dir, phase, target_status=_st, target_lock=_lk)
             )
-            with status_lock:
-                status["log"].append(
-                    f"Done! {len(results)} images generated, {status['errors']} errors. "
-                    f"Estimated cost: ${status['cost']:.2f}"
+            with _lk:
+                _st["log"].append(
+                    f"Done! {len(results)} images generated, {_st['errors']} errors. "
+                    f"Estimated cost: ${_st['cost']:.2f}"
                 )
         except Exception as e:
-            with status_lock:
-                status["log"].append(f"FATAL ERROR: {e}")
+            with _lk:
+                _st["log"].append(f"FATAL ERROR: {e}")
         finally:
-            with status_lock:
-                status["running"] = False
-                status["done"] = True
+            with _lk:
+                _st["running"] = False
+                _st["done"] = True
             loop.close()
 
     t = threading.Thread(target=_run, daemon=True)
@@ -2421,7 +2435,7 @@ async function openLastApiCallWindow() {
   }
   w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
   try {
-    const r = await fetch('/last_api_call');
+    const r = await fetch('/last_api_call?page=revision');
     const data = await r.json();
     const text = (data && data.text) ? data.text : 'No API call recorded yet.';
     w.document.querySelector('pre').textContent = text;
@@ -2435,7 +2449,7 @@ async function openBorderApiCallWindow() {
   if (!w) { alert('Popup blocked.'); return; }
   w.document.write('<!doctype html><html><head><title>Border Pass API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Border pass API call payload</div><pre>Loading\u2026</pre></body></html>');
   try {
-    const r = await fetch('/last_border_api_call');
+    const r = await fetch('/last_border_api_call?page=revision');
     const data = await r.json();
     const text = (data && data.text) ? data.text : 'No border pass API call recorded yet.';
     w.document.querySelector('pre').textContent = text;
@@ -2639,7 +2653,7 @@ function clearFollowUpBase() {
 
 async function cancelGeneration() {
   try {
-    await fetch('/cancel', { method: 'POST' });
+    await fetch('/cancel?page=revision', { method: 'POST' });
     document.getElementById('statusText').textContent = 'Cancelling...';
   } catch(e) {}
 }
@@ -2734,7 +2748,7 @@ function startPolling() {
   if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(async () => {
     try {
-      const r = await fetch('/status');
+      const r = await fetch('/status?page=revision');
       const d = await r.json();
       (d.images || []).forEach(addImageCard);
       renderLogs(d.log || []);
@@ -3791,41 +3805,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/descriptions":
             self._serve_descriptions_html()
         elif path == "/status":
+            # Pick the right status dict based on ?page= param
+            _st, _lk = (revision_status, revision_status_lock) if params.get("page") == "revision" else (main_status, main_status_lock)
             # Thread-safe snapshot: copy mutable containers to prevent
             # RuntimeError from concurrent dict/list modification by
             # the background generation thread.
             try:
-                with status_lock:
+                with _lk:
                     safe = {
-                        "running": status["running"],
-                        "phase": status["phase"],
-                        "total": status["total"],
-                        "completed": status["completed"],
-                        "errors": status["errors"],
-                        "log": list(status["log"]),
-                        "images": list(status["images"]),
-                        "done": status["done"],
-                        "output_dir": status["output_dir"],
-                        "episode_dir": status["episode_dir"],
-                        "round_num": status["round_num"],
-                        "ideas": list(status.get("ideas", [])),
-                        "idea_groups": {k: list(v) for k, v in status["idea_groups"].items()},
-                        "cost": status["cost"],
-                        "session_cost": status.get("session_cost", 0.0),
-                        "desc_calls": status.get("desc_calls", 0),
-                        "desc_input_chars": status.get("desc_input_chars", 0),
-                        "desc_output_chars": status.get("desc_output_chars", 0),
+                        "running": _st["running"],
+                        "phase": _st["phase"],
+                        "total": _st["total"],
+                        "completed": _st["completed"],
+                        "errors": _st["errors"],
+                        "log": list(_st["log"]),
+                        "images": list(_st["images"]),
+                        "done": _st["done"],
+                        "output_dir": _st["output_dir"],
+                        "episode_dir": _st["episode_dir"],
+                        "round_num": _st["round_num"],
+                        "ideas": list(_st.get("ideas", [])),
+                        "idea_groups": {k: list(v) for k, v in _st["idea_groups"].items()},
+                        "cost": _st["cost"],
+                        "session_cost": _st.get("session_cost", 0.0),
+                        "desc_calls": _st.get("desc_calls", 0),
+                        "desc_input_chars": _st.get("desc_input_chars", 0),
+                        "desc_output_chars": _st.get("desc_output_chars", 0),
                     }
             except Exception:
                 # Fallback: return minimal status so polling doesn't break
                 safe = {
-                    "running": status.get("running", False),
-                    "done": status.get("done", False),
-                    "completed": status.get("completed", 0),
-                    "total": status.get("total", 0),
-                    "errors": status.get("errors", 0),
+                    "running": _st.get("running", False),
+                    "done": _st.get("done", False),
+                    "completed": _st.get("completed", 0),
+                    "total": _st.get("total", 0),
+                    "errors": _st.get("errors", 0),
                     "log": [], "images": [], "idea_groups": {},
-                    "phase": status.get("phase", "idle"),
+                    "phase": _st.get("phase", "idle"),
                     "output_dir": "", "episode_dir": "",
                     "round_num": 0, "ideas": [],
                     "cost": 0, "session_cost": 0,
@@ -3833,12 +3849,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 }
             self._json_response(safe)
         elif path == "/last_api_call":
-            with status_lock:
-                payload = status.get("last_api_call", "")
+            _st, _lk = (revision_status, revision_status_lock) if params.get("page") == "revision" else (main_status, main_status_lock)
+            with _lk:
+                payload = _st.get("last_api_call", "")
             self._json_response({"ok": True, "text": payload})
         elif path == "/last_border_api_call":
-            with status_lock:
-                payload = status.get("last_border_api_call", "")
+            _st, _lk = (revision_status, revision_status_lock) if params.get("page") == "revision" else (main_status, main_status_lock)
+            with _lk:
+                payload = _st.get("last_border_api_call", "")
             self._json_response({"ok": True, "text": payload})
         elif path == "/border_prompt":
             self._json_response({"ok": True, "text": BORDER_PASS_PROMPT})
@@ -3980,10 +3998,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif path == "/generate_descriptions":
                 self._handle_generate_descriptions(body)
             elif path == "/cancel":
-                with status_lock:
-                    if status.get("running"):
-                        status["cancel_requested"] = True
-                        status["log"].append("Cancel requested — waiting for in-flight API calls to finish...")
+                cancel_params = dict(urllib.parse.parse_qsl(parsed.query))
+                _st, _lk = (revision_status, revision_status_lock) if cancel_params.get("page") == "revision" else (main_status, main_status_lock)
+                with _lk:
+                    if _st.get("running"):
+                        _st["cancel_requested"] = True
+                        _st["log"].append("Cancel requested — waiting for in-flight API calls to finish...")
                         self._json_response({"ok": True, "message": "Cancel requested"})
                     else:
                         self._json_response({"ok": True, "message": "Nothing running"})
@@ -4124,7 +4144,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             client = get_client()
             ideas_list = generate_ideas(client, title, custom_prompt, transcript_text, additional)
-            status["ideas"] = ideas_list
+            main_status["ideas"] = ideas_list
             self._json_response({"ok": True, "ideas": ideas_list})
         except Exception as e:
             self._json_response({"error": f"Idea generation failed: {str(e)[:200]}"})
@@ -4200,9 +4220,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _handle_generate_from_ideas(self, body):
         """Generate 3 thumbnails per idea."""
-        global status
-        with status_lock:
-            is_running = status["running"]
+        with main_status_lock:
+            is_running = main_status["running"]
         if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
@@ -4270,21 +4289,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         save_metadata(round_dir, info_dict, len(prompts), "round1")
 
         # Store state
-        status["episode_dir"] = episode_dir
-        status["speakers"] = speaker_refs
-        status["sources"] = source_refs
-        status["ideas"] = ideas_list
-        status["round_num"] = 1
-        status["add_border"] = fields.get("add_border") == "1"
-        run_generation(client, prompts, round_dir, "round1")
+        main_status["episode_dir"] = episode_dir
+        main_status["speakers"] = speaker_refs
+        main_status["sources"] = source_refs
+        main_status["ideas"] = ideas_list
+        main_status["round_num"] = 1
+        main_status["add_border"] = fields.get("add_border") == "1"
+        run_generation(client, prompts, round_dir, "round1", target_status=main_status, target_lock=main_status_lock)
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
     def _handle_riff_idea(self, body):
         """Generate more thumbnails for a single idea."""
-        global status
-        with status_lock:
-            is_running = status["running"]
+        with main_status_lock:
+            is_running = main_status["running"]
         if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
@@ -4313,34 +4331,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         client = get_client()
 
         # Reuse stored refs from initial generation (riff no longer resends full library)
-        speaker_refs = status.get("speakers", [])
-        source_refs = list(status.get("sources", []))
+        speaker_refs = main_status.get("speakers", [])
+        source_refs = list(main_status.get("sources", []))
 
         # Upload riff-specific images if the user added any
         riff_image_refs = upload_files_from_bytes(client, files.get("riff_images", []), "riff_img")
         source_refs.extend(riff_image_refs)
 
-        episode_dir = status.get("episode_dir", "")
+        episode_dir = main_status.get("episode_dir", "")
         if not episode_dir:
             episode_dir = os.path.join(THUMBNAILS_DIR, f"riff-{datetime.date.today().isoformat()}")
 
-        with status_lock:
-            status["round_num"] = status.get("round_num", 1) + 1
-            round_num = status["round_num"]
+        with main_status_lock:
+            main_status["round_num"] = main_status.get("round_num", 1) + 1
+            round_num = main_status["round_num"]
 
             # Compute next available idea index (beyond all existing images and ideas)
-            existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
-            ideas_max = len(status.get("ideas", [])) - 1
+            existing_max = max((img["idea_idx"] for img in main_status["images"]), default=-1)
+            ideas_max = len(main_status.get("ideas", [])) - 1
             riff_idea_idx = max(existing_max, ideas_max) + 1
 
             # Track this riff idea server-side so future riff_idea_idx
             # computations stay correct even without image data.
             riff_label = f"(Riff on Idea {idea_idx + 1}) {idea_text}"
-            ideas_list = status.get("ideas", [])
+            ideas_list = main_status.get("ideas", [])
             while len(ideas_list) <= riff_idea_idx:
                 ideas_list.append("")
             ideas_list[riff_idea_idx] = riff_label
-            status["ideas"] = ideas_list
+            main_status["ideas"] = ideas_list
 
         round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
@@ -4355,8 +4373,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         prompts = [(riff_idea_idx, var, contents) for (_, var, contents) in prompts_raw]
 
-        status["add_border"] = fields.get("add_border") == "1"
-        run_generation(client, prompts, round_dir, "riff")
+        main_status["add_border"] = fields.get("add_border") == "1"
+        run_generation(client, prompts, round_dir, "riff", target_status=main_status, target_lock=main_status_lock)
         self._json_response({
             "ok": True, "output_dir": round_dir, "count": len(prompts),
             "riff_idea_idx": riff_idea_idx, "riff_label": idea_text,
@@ -4401,9 +4419,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"error": f"Idea generation failed: {str(e)[:200]}"})
 
     def _handle_revise_upload(self, body):
-        global status
-        with status_lock:
-            is_running = status["running"]
+        with revision_status_lock:
+            is_running = revision_status["running"]
         if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
@@ -4457,12 +4474,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
 
         episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
-        with status_lock:
-            status["round_num"] = status.get("round_num", 0) + 1
-            round_num = status["round_num"]
+        with revision_status_lock:
+            revision_status["round_num"] = revision_status.get("round_num", 0) + 1
+            round_num = revision_status["round_num"]
             revision_idea_idx = 0
-            status["ideas"] = [f"Revision page: {prompt[:120]}"]
-            status["episode_dir"] = episode_dir
+            revision_status["ideas"] = [f"Revision page: {prompt[:120]}"]
+            revision_status["episode_dir"] = episode_dir
 
         round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
@@ -4470,7 +4487,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         custom_context = fields.get("revision_context_prompt", "").strip() or None
         prompts = build_revision_prompts(
             [base_img],
-            status.get("speakers", []),
+            revision_status.get("speakers", []),
             prompt,
             count_per=count,
             idea_idx=revision_idea_idx,
@@ -4478,22 +4495,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             context_prompt=custom_context,
         )
 
-        status["add_border"] = fields.get("add_border") == "1"
-        status["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
-        run_generation(client, prompts, round_dir, "revision_page")
-        with status_lock:
+        revision_status["add_border"] = fields.get("add_border") == "1"
+        revision_status["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
+        run_generation(client, prompts, round_dir, "revision_page", target_status=revision_status, target_lock=revision_status_lock)
+        with revision_status_lock:
             base_src = "uploaded file" if base_files else "follow-up result"
-            status["log"].append(f"Revision base: {base_src}")
-            status["log"].append(f"Prompt: {prompt[:180]}")
-            status["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
-            status["log"].append(f"Requested attempts: {count}")
+            revision_status["log"].append(f"Revision base: {base_src}")
+            revision_status["log"].append(f"Prompt: {prompt[:180]}")
+            revision_status["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
+            revision_status["log"].append(f"Requested attempts: {count}")
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
     def _handle_revise_post(self, body):
-        global status
-        with status_lock:
-            is_running = status["running"]
+        with main_status_lock:
+            is_running = main_status["running"]
         if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
@@ -4521,17 +4537,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         selected_images = []
         # Track which idea(s) the selected images belong to
         source_idea_idxs = set()
-        for img_info in status["images"]:
+        for img_info in main_status["images"]:
             if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
                 selected_images.append(Image.open(img_info["path"]))
                 if img_info.get("idea_idx", -1) >= 0:
                     source_idea_idxs.add(img_info["idea_idx"])
 
         if not selected_images:
-            if not status["images"]:
+            if not main_status["images"]:
                 self._json_response({"error": "No thumbnails in server memory. The server was likely restarted — please regenerate thumbnails first."})
             else:
-                self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(status['images'])) + " known images). Try regenerating."})
+                self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(main_status['images'])) + " known images). Try regenerating."})
             return
 
         client = get_client()
@@ -4539,8 +4555,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Upload attachment images if provided
         attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
 
-        speakers = status.get("speakers", [])
-        episode_dir = status.get("episode_dir", "")
+        speakers = main_status.get("speakers", [])
+        episode_dir = main_status.get("episode_dir", "")
 
         # Build revision label from source ideas
         try:
@@ -4548,7 +4564,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             src_indices = list(source_idea_idxs)
 
-        ideas_list = status.get("ideas", [])
+        ideas_list = main_status.get("ideas", [])
         source_parts = []
         for si in src_indices:
             si = int(si)
@@ -4563,20 +4579,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             revision_label = f"(Revision) {prompt_summary}"
 
-        with status_lock:
-            status["round_num"] = status.get("round_num", 1) + 1
-            round_num = status["round_num"]
+        with main_status_lock:
+            main_status["round_num"] = main_status.get("round_num", 1) + 1
+            round_num = main_status["round_num"]
 
             # Compute next available idea index (like riff does)
-            existing_max = max((img["idea_idx"] for img in status["images"]), default=-1)
-            ideas_max = len(status.get("ideas", [])) - 1
+            existing_max = max((img["idea_idx"] for img in main_status["images"]), default=-1)
+            ideas_max = len(main_status.get("ideas", [])) - 1
             revision_idea_idx = max(existing_max, ideas_max) + 1
 
             # Track this revision idea server-side
             while len(ideas_list) <= revision_idea_idx:
                 ideas_list.append("")
             ideas_list[revision_idea_idx] = revision_label
-            status["ideas"] = ideas_list
+            main_status["ideas"] = ideas_list
 
         round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
@@ -4590,8 +4606,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             attachment_refs=attachment_refs if attachment_refs else None,
         )
 
-        status["add_border"] = fields.get("add_border") == "1"
-        run_generation(client, prompts, round_dir, "revision")
+        main_status["add_border"] = fields.get("add_border") == "1"
+        run_generation(client, prompts, round_dir, "revision", target_status=main_status, target_lock=main_status_lock)
 
         self._json_response({
             "ok": True,
@@ -4602,9 +4618,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         })
 
     def _handle_vary(self, params):
-        global status
-        with status_lock:
-            is_running = status["running"]
+        with main_status_lock:
+            is_running = main_status["running"]
         if is_running:
             self._json_response({"error": "Generation already in progress"})
             return
@@ -4616,29 +4631,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         selected_images = []
-        for img_info in status["images"]:
+        for img_info in main_status["images"]:
             if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
                 selected_images.append(Image.open(img_info["path"]))
 
         if not selected_images:
-            if not status["images"]:
+            if not main_status["images"]:
                 self._json_response({"error": "No thumbnails in server memory. The server was likely restarted — please regenerate thumbnails first."})
             else:
-                self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(status['images'])) + " known images). Try regenerating."})
+                self._json_response({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(main_status['images'])) + " known images). Try regenerating."})
             return
 
-        speakers = status.get("speakers", [])
-        episode_dir = status.get("episode_dir", "")
-        with status_lock:
-            status["round_num"] = status.get("round_num", 1) + 1
-            round_num = status["round_num"]
+        speakers = main_status.get("speakers", [])
+        episode_dir = main_status.get("episode_dir", "")
+        with main_status_lock:
+            main_status["round_num"] = main_status.get("round_num", 1) + 1
+            round_num = main_status["round_num"]
         round_dir = os.path.join(episode_dir, f"round{round_num}")
         os.makedirs(round_dir, exist_ok=True)
 
         prompts = build_variation_prompts(selected_images, speakers, count_per=3)
 
         client = get_client()
-        run_generation(client, prompts, round_dir, "variation")
+        run_generation(client, prompts, round_dir, "variation", target_status=main_status, target_lock=main_status_lock)
 
         self._json_response({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
@@ -4649,7 +4664,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json_response({"error": "No images selected"})
             return
 
-        episode_dir = status.get("episode_dir", "")
+        episode_dir = main_status.get("episode_dir", "")
         if not episode_dir:
             self._json_response({"error": "No episode directory found"})
             return
@@ -4658,7 +4673,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         os.makedirs(finals_dir, exist_ok=True)
 
         count = 0
-        for img_info in status["images"]:
+        for img_info in main_status["images"]:
             if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
                 count += 1
                 dest = os.path.join(finals_dir, f"final_{count}.png")
@@ -4670,7 +4685,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if os.environ.get("NO_BROWSER") == "1":
             self._json_response({"ok": True, "note": "Folder open disabled on server"})
             return
-        episode_dir = status.get("episode_dir", THUMBNAILS_DIR)
+        episode_dir = main_status.get("episode_dir", THUMBNAILS_DIR)
         if os.path.isdir(episode_dir):
             subprocess.Popen(["open", episode_dir])
         self._json_response({"ok": True})
