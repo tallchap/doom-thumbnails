@@ -1399,6 +1399,9 @@ HTML = r"""<!DOCTYPE html>
     <button class="btn btn-secondary" id="gatherBtn" onclick="gatherSourceImages()">Gather Source Images from Web</button>
     <button class="btn btn-primary" id="skipToIdeasBtn" onclick="skipToIdeas()">Skip to Generate Ideas</button>
   </div>
+  <div style="margin-top:16px;padding-top:16px;border-top:1px solid #1f2f57;">
+    <button class="btn" style="background:#7c3aed;width:100%;font-size:15px;padding:12px;" onclick="quickStart()">&#9889; Quick Start: Liron vs Daniel Kokotajlo — AI Doom Debate</button>
+  </div>
 </div>
 
 <!-- STEP 2: SOURCE IMAGE GALLERY -->
@@ -1662,6 +1665,11 @@ function addMoreSourceImages(input) {
     sourceImages.push({url: url, thumbnail: url, title: file.name, removed: false, localFile: file});
   }
   renderSourceGallery();
+}
+
+function quickStart() {
+  document.getElementById('episodeTitle').value = 'Liron Shapira vs Daniel Kokotajlo \u2014 AI Doom Debate';
+  skipToIdeas();
 }
 
 function skipToIdeas() {
