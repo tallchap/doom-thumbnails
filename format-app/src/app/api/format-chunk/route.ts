@@ -4,7 +4,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {
+  console.log("[format-chunk] Request received");
   if (!process.env.ANTHROPIC_API_KEY) {
+    console.error("[format-chunk] ANTHROPIC_API_KEY not configured");
     return new Response(
       JSON.stringify({ error: "ANTHROPIC_API_KEY not configured" }),
       { status: 503, headers: { "Content-Type": "application/json" } }
@@ -16,6 +18,7 @@ export async function POST(req: NextRequest) {
     userMessage: string;
     useWebSearch?: boolean;
   };
+  console.log(`[format-chunk] Chunk size: ${userMessage.length} chars, webSearch: ${!!useWebSearch}`);
 
   const client = new Anthropic();
 
@@ -40,24 +43,41 @@ export async function POST(req: NextRequest) {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     stream = await (client.messages as any).create(createParams);
+    console.log("[format-chunk] Claude stream started");
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown API error";
+    console.error(`[format-chunk] Claude API error: ${msg}`);
     return new Response(msg, { status: 500 });
   }
 
   const readable = new ReadableStream({
     async start(controller) {
       try {
+        let lastKeepAlive = Date.now();
+        let firstText = true;
         for await (const event of stream) {
           if (
             event.type === "content_block_delta" &&
             event.delta.type === "text_delta"
           ) {
+            if (firstText) {
+              console.log("[format-chunk] First text_delta received");
+              firstText = false;
+            }
             controller.enqueue(new TextEncoder().encode(event.delta.text));
+          } else {
+            // Send keepalive space every 15s during thinking to prevent Render idle timeout
+            const now = Date.now();
+            if (now - lastKeepAlive > 15000) {
+              controller.enqueue(new TextEncoder().encode(" "));
+              lastKeepAlive = now;
+            }
           }
         }
+        console.log("[format-chunk] Stream complete");
         controller.close();
       } catch (err) {
+        console.error(`[format-chunk] Stream error: ${err instanceof Error ? err.message : err}`);
         controller.error(err);
       }
     },

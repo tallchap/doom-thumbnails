@@ -137,8 +137,8 @@ export function OutputViewer({ output, isStreaming, chapterTitles, onChapterTitl
     return lines.length >= 2;
   }
 
-  const modelTag = "claude-opus-4-6 · adaptive thinking · max effort";
-  const modelTagSearch = "claude-opus-4-6 · adaptive thinking · max effort · web search";
+  const modelTag = "claude-opus-4-6 · adaptive thinking · high effort";
+  const modelTagSearch = "claude-opus-4-6 · adaptive thinking · high effort · web search";
 
   return (
     <div className="flex flex-col gap-5">
