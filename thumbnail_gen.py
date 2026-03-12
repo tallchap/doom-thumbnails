@@ -180,7 +180,7 @@ RULES:
 - 16:9 aspect ratio, photorealistic, sharp focus
 - Large expressive faces (40-60% of frame)
 - High contrast, clean composition, one focal point
-- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are: (1) Liron Shapira if his reference photos are attached — his face MUST faithfully match those reference photos, (2) the episode guest if speaker photos are attached. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
+- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are those whose reference photos are attached separately below. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
 - Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
 - DO NOT include AI chip/microchip/circuit-board iconography (including a square chip with "AI" text or similar symbols).
 
