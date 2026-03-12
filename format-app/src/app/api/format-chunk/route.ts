@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       type: "adaptive",
     },
     output_config: {
-      effort: "max",
+      effort: "high",
     },
     system: systemPrompt,
     messages: [{ role: "user", content: userMessage }],
