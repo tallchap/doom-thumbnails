@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.parse
 import webbrowser
@@ -3757,23 +3758,27 @@ dropZone.addEventListener("drop", async e => {
   }
   if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
     const file = e.dataTransfer.files[0];
-    videoInput.value = "Resolving path\u2026";
+    videoInput.value = "Uploading " + file.name + "\u2026";
     try {
-      const resp = await fetch("/fc_resolve_file?name=" + encodeURIComponent(file.name) + "&size=" + file.size);
+      const fd = new FormData();
+      fd.append("video", file);
+      fd.append("filename", file.name);
+      const resp = await fetch("/fc_upload", { method: "POST", body: fd });
       const data = await resp.json();
       if (data.path) {
         videoInput.value = data.path;
       } else {
         videoInput.value = "";
-        alert('Could not resolve full path for "' + file.name + '". Please paste the path manually.');
+        alert(data.error || 'Upload failed for "' + file.name + '".');
       }
-    } catch(err) { videoInput.value = ""; }
+    } catch(err) { videoInput.value = ""; alert("Upload failed: " + err.message); }
   }
 });
 
 document.addEventListener("dragover", e => e.preventDefault());
 document.addEventListener("drop", e => e.preventDefault());
 </script>
+<div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">__GIT_VERSION__</div>
 </body>
 </html>"""
 
@@ -4031,6 +4036,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._handle_revise_post(body)
             elif path == "/generate_descriptions":
                 self._handle_generate_descriptions(body)
+            elif path == "/fc_upload":
+                content_type = self.headers.get("Content-Type", "")
+                if "multipart/form-data" in content_type:
+                    fields, files = parse_multipart(self.headers, body)
+                else:
+                    self._json_response({"error": "Expected multipart/form-data"})
+                    return
+                video_data = files.get("video", [])
+                if not video_data:
+                    self._json_response({"error": "No video file uploaded"})
+                    return
+                upload_dir = os.path.join(tempfile.gettempdir(), "fc_uploads")
+                os.makedirs(upload_dir, exist_ok=True)
+                filename = fields.get("filename", "upload.mp4")
+                # Sanitize filename
+                filename = os.path.basename(filename)
+                if not filename:
+                    filename = "upload.mp4"
+                save_path = os.path.join(upload_dir, filename)
+                with open(save_path, "wb") as f:
+                    f.write(video_data[0])
+                self._json_response({"path": save_path})
             elif path == "/cancel":
                 cancel_params = dict(urllib.parse.parse_qsl(parsed.query))
                 _st, _lk = (revision_status, revision_status_lock) if cancel_params.get("page") == "revision" else (main_status, main_status_lock)
@@ -4073,6 +4100,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "FC_EXPR_LIST_PLACEHOLDER", json.dumps(FC_CORE_EXPRESSIONS)
         ).replace(
             "FC_OUTPUT_PLACEHOLDER", FC_CAPTURES_DIR
+        ).replace(
+            "__GIT_VERSION__", GIT_VERSION
         )
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
