@@ -3798,16 +3798,33 @@ dropZone.addEventListener("drop", async e => {
       const presignData = await presignResp.json();
       if (presignData.error) { videoInput.value = ""; alert(presignData.error); return; }
 
-      // Step 2: Upload directly to S3
-      videoInput.value = "Uploading " + file.name + " (" + sizeMB + " MB) to S3\u2026";
-      const s3Resp = await fetch(presignData.url, {
-        method: "PUT",
-        body: file,
-        headers: { "Content-Type": "video/mp4" },
+      // Step 2: Upload directly to S3 with progress tracking
+      const s3Ok = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const startTime = Date.now();
+        xhr.open("PUT", presignData.url);
+        xhr.setRequestHeader("Content-Type", "video/mp4");
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable) {
+            const pct = Math.round(ev.loaded / ev.total * 100);
+            const elapsed = (Date.now() - startTime) / 1000;
+            const speed = ev.loaded / elapsed;
+            const remaining = (ev.total - ev.loaded) / speed;
+            let eta = "";
+            if (elapsed > 2 && remaining > 0) {
+              if (remaining > 60) eta = " \u2014 ~" + Math.ceil(remaining / 60) + " min left";
+              else eta = " \u2014 ~" + Math.ceil(remaining) + "s left";
+            }
+            videoInput.value = "Uploading to S3: " + pct + "% (" + sizeMB + " MB)" + eta;
+          }
+        };
+        xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+        xhr.send(file);
       });
-      if (!s3Resp.ok) {
+      if (!s3Ok) {
         videoInput.value = "";
-        alert("S3 upload failed (status " + s3Resp.status + "). Try again.");
+        alert("S3 upload failed. Try again.");
         return;
       }
 
