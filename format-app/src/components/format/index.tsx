@@ -75,7 +75,7 @@ export function FormatTranscript() {
         if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
         if (!response.body) throw new Error("No response body");
         const reader = response.body.getReader(); const decoder = new TextDecoder(); let chunkOutput = "";
-        while (true) { const { done, value } = await reader.read(); if (done) break; const text = decoder.decode(value, { stream: true }); chunkOutput += text; outputRef.current += text; }
+        while (true) { const { done, value } = await reader.read(); if (done) break; let text = decoder.decode(value, { stream: true }); if (!chunkOutput) text = text.trimStart(); chunkOutput += text; outputRef.current += text; }
         context = { sectionsCompleted: extractSectionHeaders(chunkOutput), lastLines: chunkOutput.slice(-500) };
         updateChunkStatus(i, "done", chunkOutput);
         // Progressive chapter title extraction (only if user hasn't manually edited)
@@ -107,7 +107,7 @@ export function FormatTranscript() {
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       if (!response.body) throw new Error("No response body");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let result = "";
-      while (true) { const { done, value } = await reader.read(); if (done) break; result += decoder.decode(value, { stream: true }); setLinks(result); }
+      while (true) { const { done, value } = await reader.read(); if (done) break; let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart(); result += text; setLinks(result); }
       setLinks(result);
     } catch (err) {
       toast.error(`Link extraction failed: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -137,7 +137,8 @@ export function FormatTranscript() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        result += decoder.decode(value, { stream: true });
+        let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart();
+        result += text;
         setLinksChatStreaming(result);
       }
       setLinksChatMessages((prev) => [...prev, { role: "assistant", content: result.trim() }]);
@@ -178,7 +179,8 @@ export function FormatTranscript() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        result += decoder.decode(value, { stream: true });
+        let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart();
+        result += text;
         setTitlesChatStreaming(result);
       }
       setTitlesChatMessages((prev) => [...prev, { role: "assistant", content: result.trim() }]);

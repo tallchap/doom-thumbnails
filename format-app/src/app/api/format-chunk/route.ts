@@ -53,6 +53,9 @@ export async function POST(req: NextRequest) {
   const readable = new ReadableStream({
     async start(controller) {
       try {
+        const enc = new TextEncoder();
+        // Send immediate keepalive to establish the streaming connection
+        controller.enqueue(enc.encode(" "));
         let lastKeepAlive = Date.now();
         let firstText = true;
         for await (const event of stream) {
@@ -64,12 +67,12 @@ export async function POST(req: NextRequest) {
               console.log("[format-chunk] First text_delta received");
               firstText = false;
             }
-            controller.enqueue(new TextEncoder().encode(event.delta.text));
+            controller.enqueue(enc.encode(event.delta.text));
           } else {
-            // Send keepalive space every 15s during thinking to prevent Render idle timeout
+            // Send keepalive space every 10s during thinking to prevent Render idle timeout
             const now = Date.now();
-            if (now - lastKeepAlive > 15000) {
-              controller.enqueue(new TextEncoder().encode(" "));
+            if (now - lastKeepAlive > 10000) {
+              controller.enqueue(enc.encode(" "));
               lastKeepAlive = now;
             }
           }
@@ -87,6 +90,9 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+      "Connection": "keep-alive",
     },
   });
 }
