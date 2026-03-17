@@ -3620,7 +3620,7 @@ HTML_FACE_CAPTURE = r"""<!DOCTYPE html>
 <div class="card">
   <div class="btn-row">
     <button class="run" id="runBtn" onclick="run()">Find Expressions</button>
-    <button class="open" id="openBtn" onclick="openFolder()" style="display:none">Open Output Folder</button>
+    <button class="open" id="openBtn" onclick="downloadAll()" style="display:none">Download All Captures</button>
     <span id="spinnerSpan" style="display:none; margin-left: 12px;">
       <span class="spinner"></span> Processing...
     </span>
@@ -3728,19 +3728,24 @@ async function showResults(resultDirs) {
         thumb.className = "thumb";
         const img = document.createElement("img");
         img.src = "/fc_image?path=" + encodeURIComponent(item.crop_path);
-        img.title = item.crop_path.split("/").pop();
+        img.title = "Click to view full size";
+        img.style.cursor = "pointer";
         if (item.full_path) {
           img.addEventListener("click", () => {
-            fetch("/fc_open_image?path=" + encodeURIComponent(item.full_path));
+            window.open("/fc_image?path=" + encodeURIComponent(item.full_path), "_blank");
           });
         }
         thumb.appendChild(img);
-        if (item.timestamp) {
-          const ts = document.createElement("div");
-          ts.className = "thumb-ts";
-          ts.textContent = item.timestamp;
-          thumb.appendChild(ts);
+        const info = document.createElement("div");
+        info.className = "thumb-ts";
+        const parts = [];
+        if (item.timestamp) parts.push(item.timestamp);
+        if (item.full_path) {
+          parts.push('<a href="/fc_image?path=' + encodeURIComponent(item.full_path)
+            + '&download=1" style="color:#4fc3f7;">download</a>');
         }
+        info.innerHTML = parts.join(" &mdash; ");
+        thumb.appendChild(info);
         row.appendChild(thumb);
       }
       container.appendChild(row);
@@ -3749,9 +3754,9 @@ async function showResults(resultDirs) {
 }
 
 let lastOutputDir = "";
-function openFolder() {
+function downloadAll() {
   const dir = lastOutputDir || document.getElementById("output").value;
-  fetch("/fc_open_folder?dir=" + encodeURIComponent(dir));
+  if (dir) window.open("/fc_download_zip?dir=" + encodeURIComponent(dir), "_blank");
 }
 
 // Drag & drop support
@@ -4041,10 +4046,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Length", str(len(data)))
+                if params.get("download") == "1":
+                    fname = os.path.basename(img_path)
+                    self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
                 self.end_headers()
                 self.wfile.write(data)
             else:
                 self.send_error(404)
+        elif path == "/fc_download_zip":
+            d = params.get("dir", "")
+            if not os.path.isdir(d):
+                self.send_error(404)
+                return
+            import zipfile
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for root, dirs, files in os.walk(d):
+                    for fname in files:
+                        if fname.endswith(".png") or fname == "metadata.json":
+                            full = os.path.join(root, fname)
+                            arcname = os.path.relpath(full, os.path.dirname(d))
+                            zf.write(full, arcname)
+            zip_data = zip_buf.getvalue()
+            folder_name = os.path.basename(d)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(len(zip_data)))
+            self.send_header("Content-Disposition", f'attachment; filename="captures-{folder_name}.zip"')
+            self.end_headers()
+            self.wfile.write(zip_data)
         elif path == "/fc_resolve_file":
             name = params.get("name", "")
             size = int(params.get("size", "0"))
