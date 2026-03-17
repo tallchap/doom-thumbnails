@@ -3760,11 +3760,19 @@ dropZone.addEventListener("drop", async e => {
     const file = e.dataTransfer.files[0];
     videoInput.value = "Uploading " + file.name + "\u2026";
     try {
+      const sizeMB = (file.size / 1024 / 1024).toFixed(0);
+      videoInput.value = "Uploading " + file.name + " (" + sizeMB + " MB)\u2026";
       const fd = new FormData();
       fd.append("video", file);
       fd.append("filename", file.name);
       const resp = await fetch("/fc_upload", { method: "POST", body: fd });
-      const data = await resp.json();
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch(e) {
+        videoInput.value = "";
+        alert("Upload failed (server returned non-JSON). Status: " + resp.status + ". The file may be too large for the server.");
+        return;
+      }
       if (data.path) {
         videoInput.value = data.path;
       } else {
@@ -4016,6 +4024,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
+        # Handle /fc_upload before reading full body — stream large video to disk
+        if path == "/fc_upload":
+            try:
+                self._handle_fc_upload()
+            except Exception as e:
+                print(f"POST /fc_upload error: {e}")
+                try:
+                    self._json_response({"error": f"Upload failed: {str(e)[:300]}"})
+                except Exception:
+                    pass
+            return
+
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
@@ -4036,28 +4056,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._handle_revise_post(body)
             elif path == "/generate_descriptions":
                 self._handle_generate_descriptions(body)
-            elif path == "/fc_upload":
-                content_type = self.headers.get("Content-Type", "")
-                if "multipart/form-data" in content_type:
-                    fields, files = parse_multipart(self.headers, body)
-                else:
-                    self._json_response({"error": "Expected multipart/form-data"})
-                    return
-                video_data = files.get("video", [])
-                if not video_data:
-                    self._json_response({"error": "No video file uploaded"})
-                    return
-                upload_dir = os.path.join(tempfile.gettempdir(), "fc_uploads")
-                os.makedirs(upload_dir, exist_ok=True)
-                filename = fields.get("filename", "upload.mp4")
-                # Sanitize filename
-                filename = os.path.basename(filename)
-                if not filename:
-                    filename = "upload.mp4"
-                save_path = os.path.join(upload_dir, filename)
-                with open(save_path, "wb") as f:
-                    f.write(video_data[0])
-                self._json_response({"path": save_path})
             elif path == "/cancel":
                 cancel_params = dict(urllib.parse.parse_qsl(parsed.query))
                 _st, _lk = (revision_status, revision_status_lock) if cancel_params.get("page") == "revision" else (main_status, main_status_lock)
@@ -4107,6 +4105,84 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
+
+    def _handle_fc_upload(self):
+        """Stream video upload directly to disk to avoid buffering large files in memory."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        content_type = self.headers.get("Content-Type", "")
+
+        if "multipart/form-data" not in content_type:
+            self._json_response({"error": "Expected multipart/form-data"})
+            return
+
+        # Extract boundary from Content-Type header
+        boundary = None
+        for part in content_type.split(";"):
+            part = part.strip()
+            if part.startswith("boundary="):
+                boundary = part[9:].strip().strip('"')
+        if not boundary:
+            self._json_response({"error": "No boundary in Content-Type"})
+            return
+
+        upload_dir = os.path.join(tempfile.gettempdir(), "fc_uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        save_path = os.path.join(upload_dir, "upload.mp4")
+
+        # Read the multipart stream in chunks, writing file data to disk
+        boundary_bytes = ("--" + boundary).encode()
+        end_boundary = ("--" + boundary + "--").encode()
+
+        # Read entire stream (we must, for http.server), but write to disk in chunks
+        # to avoid holding two copies in memory
+        raw = self.rfile.read(content_length)
+
+        # Find the file data between boundaries
+        parts = raw.split(boundary_bytes)
+        filename = "upload.mp4"
+        file_written = False
+
+        for part in parts:
+            if b'name="video"' in part or b'name="video";' in part:
+                # Extract filename if present
+                header_end = part.find(b"\r\n\r\n")
+                if header_end == -1:
+                    continue
+                header_section = part[:header_end].decode("utf-8", errors="replace")
+                for line in header_section.split("\r\n"):
+                    if "filename=" in line:
+                        fn_start = line.find('filename="')
+                        if fn_start != -1:
+                            fn_start += 10
+                            fn_end = line.find('"', fn_start)
+                            if fn_end != -1:
+                                filename = os.path.basename(line[fn_start:fn_end]) or "upload.mp4"
+
+                # Write file data (skip header + \r\n\r\n, strip trailing \r\n)
+                file_data = part[header_end + 4:]
+                if file_data.endswith(b"\r\n"):
+                    file_data = file_data[:-2]
+
+                save_path = os.path.join(upload_dir, filename)
+                with open(save_path, "wb") as f:
+                    f.write(file_data)
+                file_written = True
+                break
+            elif b'name="filename"' in part:
+                header_end = part.find(b"\r\n\r\n")
+                if header_end != -1:
+                    val = part[header_end + 4:].strip().decode("utf-8", errors="replace").strip()
+                    if val:
+                        filename = os.path.basename(val) or "upload.mp4"
+
+        # Free the raw buffer
+        del raw
+
+        if not file_written:
+            self._json_response({"error": "No video file found in upload"})
+            return
+
+        self._json_response({"path": save_path})
 
     def _json_response(self, data):
         self.send_response(200)
