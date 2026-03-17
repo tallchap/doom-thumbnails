@@ -3152,7 +3152,7 @@ def _fc_amused(emotions, fa=None):
     return h
 
 
-def _fc_scan_video(meta, expressions, min_face_size, num_samples, log_fn=None):
+def _fc_scan_video(meta, expressions, min_face_size, num_samples, log_fn=None, existing_s3_key=None):
     """Scan video via Amazon Rekognition Video API."""
     scorers = {}
     for expr in expressions:
@@ -3169,11 +3169,15 @@ def _fc_scan_video(meta, expressions, min_face_size, num_samples, log_fn=None):
     s3 = boto3.client("s3", region_name=FC_AWS_REGION)
     rek = boto3.client("rekognition", region_name=FC_AWS_REGION)
 
-    s3_key = f"uploads/{os.path.basename(meta.path)}"
-    file_size_mb = os.path.getsize(meta.path) / (1024 * 1024)
-    emit(f"  Uploading video to S3 ({file_size_mb:.0f} MB)...")
-    s3.upload_file(meta.path, FC_S3_BUCKET, s3_key)
-    emit(f"  Upload complete.")
+    if existing_s3_key:
+        s3_key = existing_s3_key
+        emit(f"  Video already on S3 ({s3_key})")
+    else:
+        s3_key = f"uploads/{os.path.basename(meta.path)}"
+        file_size_mb = os.path.getsize(meta.path) / (1024 * 1024)
+        emit(f"  Uploading video to S3 ({file_size_mb:.0f} MB)...")
+        s3.upload_file(meta.path, FC_S3_BUCKET, s3_key)
+        emit(f"  Upload complete.")
 
     try:
         start_resp = rek.start_face_detection(
@@ -3370,8 +3374,10 @@ def _fc_log(msg):
 def _fc_run_capture(params):
     """Background thread for face capture scanning."""
     import time as _time
+    tmp_video = None  # Track if we downloaded from S3 so we can clean up
     try:
         video = params.get("video", "")
+        s3_key = params.get("s3_key", "")
         expressions = [e.strip() for e in params.get("expressions", "smile").split(",") if e.strip()]
         output_base = params.get("output", FC_CAPTURES_DIR)
         count = int(params.get("count", 10))
@@ -3384,6 +3390,18 @@ def _fc_run_capture(params):
             output_dir = os.path.join(output_base, f"{folder_name}-{suffix}")
             suffix += 1
 
+        # If s3_key provided, download from S3 to /tmp for ffprobe + cv2
+        if s3_key and not video:
+            _fc_log(f"Downloading video from S3...")
+            s3 = boto3.client("s3", region_name=FC_AWS_REGION)
+            tmp_dir = os.path.join(tempfile.gettempdir(), "fc_downloads")
+            os.makedirs(tmp_dir, exist_ok=True)
+            filename = os.path.basename(s3_key) or "video.mp4"
+            video = os.path.join(tmp_dir, filename)
+            tmp_video = video
+            s3.download_file(FC_S3_BUCKET, s3_key, video)
+            _fc_log(f"  Download complete ({os.path.getsize(video) / (1024*1024):.0f} MB)")
+
         if not os.path.isfile(video):
             _fc_log(f"ERROR: File not found: {video}")
             return
@@ -3395,7 +3413,8 @@ def _fc_run_capture(params):
         _fc_log(f"")
         _fc_log(f"Scanning for: {', '.join(expressions)} (via Amazon Rekognition)")
 
-        all_scored = _fc_scan_video(meta, expressions, 0.10, 500, log_fn=_fc_log)
+        all_scored = _fc_scan_video(meta, expressions, 0.10, 500, log_fn=_fc_log,
+                                     existing_s3_key=s3_key if s3_key else None)
 
         frames_found = max(len(v) for v in all_scored.values()) if all_scored else 0
         _fc_log(f"  Found {frames_found} frames with faces")
@@ -3435,6 +3454,12 @@ def _fc_run_capture(params):
     except Exception as e:
         _fc_log(f"ERROR: {e}")
     finally:
+        # Clean up temp downloaded file from S3
+        if tmp_video and os.path.isfile(tmp_video):
+            try:
+                os.remove(tmp_video)
+            except OSError:
+                pass
         with status_lock:
             fc_status["running"] = False
             fc_status["done"] = True
@@ -3638,7 +3663,7 @@ function esc(s) {
 async function run() {
   const video = document.getElementById("video").value.trim();
   const exprs = getExprs();
-  if (!video) { alert("Enter a video file path."); return; }
+  if (!video) { alert("Drag & drop a video file or enter a file path."); return; }
   if (exprs.length === 0) { alert("Select at least one expression."); return; }
 
   document.getElementById("runBtn").disabled = true;
@@ -3647,11 +3672,18 @@ async function run() {
   document.getElementById("results").innerHTML = "";
   document.getElementById("log").textContent = "";
 
-  const params = new URLSearchParams({
-    video, output: document.getElementById("output").value.trim(),
+  const p = {
+    output: document.getElementById("output").value.trim(),
     count: document.getElementById("count").value,
     expressions: exprs.join(","),
-  });
+  };
+  // If video starts with "s3:" it's an S3 key from presigned upload
+  if (video.startsWith("s3:")) {
+    p.s3_key = video.slice(3);
+  } else {
+    p.video = video;
+  }
+  const params = new URLSearchParams(p);
 
   await fetch("/fc_run?" + params.toString());
 
@@ -3758,27 +3790,29 @@ dropZone.addEventListener("drop", async e => {
   }
   if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
     const file = e.dataTransfer.files[0];
-    videoInput.value = "Uploading " + file.name + "\u2026";
+    const sizeMB = (file.size / 1024 / 1024).toFixed(0);
     try {
-      const sizeMB = (file.size / 1024 / 1024).toFixed(0);
-      videoInput.value = "Uploading " + file.name + " (" + sizeMB + " MB)\u2026";
-      const fd = new FormData();
-      fd.append("video", file);
-      fd.append("filename", file.name);
-      const resp = await fetch("/fc_upload", { method: "POST", body: fd });
-      const text = await resp.text();
-      let data;
-      try { data = JSON.parse(text); } catch(e) {
+      // Step 1: Get presigned S3 upload URL
+      videoInput.value = "Preparing upload for " + file.name + " (" + sizeMB + " MB)\u2026";
+      const presignResp = await fetch("/fc_presign?filename=" + encodeURIComponent(file.name));
+      const presignData = await presignResp.json();
+      if (presignData.error) { videoInput.value = ""; alert(presignData.error); return; }
+
+      // Step 2: Upload directly to S3
+      videoInput.value = "Uploading " + file.name + " (" + sizeMB + " MB) to S3\u2026";
+      const s3Resp = await fetch(presignData.url, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": "video/mp4" },
+      });
+      if (!s3Resp.ok) {
         videoInput.value = "";
-        alert("Upload failed (server returned non-JSON). Status: " + resp.status + ". The file may be too large for the server.");
+        alert("S3 upload failed (status " + s3Resp.status + "). Try again.");
         return;
       }
-      if (data.path) {
-        videoInput.value = data.path;
-      } else {
-        videoInput.value = "";
-        alert(data.error || 'Upload failed for "' + file.name + '".');
-      }
+
+      // Step 3: Store s3_key so fc_run uses it
+      videoInput.value = "s3:" + presignData.s3_key;
     } catch(err) { videoInput.value = ""; alert("Upload failed: " + err.message); }
   }
 });
@@ -3924,6 +3958,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # ----- Face Capture routes -----
         elif path == "/face-capture":
             self._serve_face_capture_html()
+        elif path == "/fc_presign":
+            filename = params.get("filename", "video.mp4")
+            filename = os.path.basename(filename) or "video.mp4"
+            s3_key = f"uploads/{filename}"
+            try:
+                s3 = boto3.client("s3", region_name=FC_AWS_REGION)
+                url = s3.generate_presigned_url(
+                    "put_object",
+                    Params={"Bucket": FC_S3_BUCKET, "Key": s3_key, "ContentType": "video/mp4"},
+                    ExpiresIn=3600,
+                )
+                self._json_response({"url": url, "s3_key": s3_key})
+            except Exception as e:
+                self._json_response({"error": f"Failed to generate presigned URL: {str(e)[:200]}"})
         elif path == "/fc_status":
             with status_lock:
                 fc_safe = {
