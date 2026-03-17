@@ -3736,10 +3736,19 @@ async function showResults(resultDirs) {
           });
         }
         thumb.appendChild(img);
+        if (item.score) {
+          const scoreBadge = document.createElement("div");
+          scoreBadge.style.cssText = "position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#4fc3f7;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:bold;";
+          scoreBadge.textContent = (item.score * 100).toFixed(0);
+          scoreBadge.title = "Expression: " + (item.expr_score * 100).toFixed(0) + " | Quality: " + (item.qual_score * 100).toFixed(0);
+          thumb.style.position = "relative";
+          thumb.appendChild(scoreBadge);
+        }
         const info = document.createElement("div");
         info.className = "thumb-ts";
         const parts = [];
         if (item.timestamp) parts.push(item.timestamp);
+        if (item.score) parts.push("expr:" + (item.expr_score * 100).toFixed(0) + " qual:" + (item.qual_score * 100).toFixed(0));
         if (item.full_path) {
           parts.push('<a href="/fc_image?path=' + encodeURIComponent(item.full_path)
             + '&download=1" style="color:#4fc3f7;">download</a>');
@@ -4032,6 +4041,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                 "full_path": full_path,
                                 "timestamp": entry.get("timestamp_display", ""),
                                 "score": entry.get("combined_score", 0),
+                                "expr_score": entry.get("expression_score", 0),
+                                "qual_score": entry.get("quality_score", 0),
                             })
                 else:
                     for f_name in sorted(os.listdir(d)):
