@@ -4957,9 +4957,7 @@ def main():
     os.makedirs(FC_CAPTURES_DIR, exist_ok=True)
 
     client = get_client()
-    upload_brand_references(client)
-    upload_liron_references(client)
-    upload_border_reference(client)
+
     print(f"Doom Debates Thumbnail Generator v2")
     print(f"Image Model: {GEMINI_MODEL}")
     print(f"Text Model: {TEXT_MODEL}")
@@ -4967,18 +4965,25 @@ def main():
     print(f"Description Model (Claude): {CLAUDE_DESCRIPTION_MODEL} {'[enabled]' if ANTHROPIC_API_KEY else '[disabled: no ANTHROPIC_API_KEY]'}")
     print(f"Description Model (GPT): {GPT_DESCRIPTION_MODEL} {'[enabled]' if OPENAI_API_KEY else '[disabled: no OPENAI_API_KEY]'}")
     print(f"Output: {THUMBNAILS_DIR}")
-    print(f"Brand Refs: {len(BRAND_FILES)} images from {EXAMPLES_DIR}")
-    print(f"Liron Refs: {len(LIRON_FILES)} images from {LIRON_DIR}")
-    print(f"Border Refs: {len(BORDER_REF_FILES)} images from assets/")
     print(f"Brave Search: {'enabled' if BRAVE_API_KEY else 'disabled (no BRAVE_API_KEY)'}")
     print(f"Server: http://0.0.0.0:{PORT}")
     if APP_PASS:
         print(f"Auth: enabled (user={APP_USER})")
     print()
 
+    # Start server FIRST so Render health check passes immediately
     server = http.server.HTTPServer(("0.0.0.0", PORT), Handler)
     if os.environ.get("NO_BROWSER") != "1":
         webbrowser.open(f"http://127.0.0.1:{PORT}")
+
+    # Upload Gemini File API refs in background thread (avoids blocking port binding)
+    def _upload_refs():
+        upload_brand_references(client)
+        upload_liron_references(client)
+        upload_border_reference(client)
+        print(f"Background upload complete: {len(BRAND_FILES)} brand, {len(LIRON_FILES)} liron, {len(BORDER_REF_FILES)} border refs")
+
+    threading.Thread(target=_upload_refs, daemon=True).start()
 
     try:
         server.serve_forever()
