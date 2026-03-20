@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Doom Debates — Face Capture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e; color: #e0e0e0; padding: 32px;
+    min-height: 100vh;
+  }
+  h1 { color: #fff; font-size: 28px; margin-bottom: 4px; }
+  .subtitle { color: #888; font-size: 14px; margin-bottom: 8px; }
+  .nav { margin-bottom: 16px; }
+  .nav a { color: #4ade80; text-decoration: none; font-weight: 600; margin-right: 18px; }
+  .nav a:hover { text-decoration: underline; }
+  .card {
+    background: #16213e; border-radius: 12px; padding: 24px;
+    margin-bottom: 16px; border: 1px solid #0f3460;
+  }
+  label.section { display: block; font-size: 13px; color: #a0a0b0; margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  input[type="text"] {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #0f3460; background: #0d1b3e; color: #fff;
+    font-size: 15px; outline: none;
+  }
+  input[type="text"]:focus { border-color: #e94560; }
+  .drop-zone {
+    position: relative; border: 2px dashed #0f3460; border-radius: 10px;
+    padding: 4px; transition: all 0.2s;
+  }
+  .drop-zone.dragover {
+    border-color: #e94560; background: rgba(233,69,96,0.08);
+  }
+  .drop-zone.dragover::after {
+    content: "Drop video file here"; position: absolute;
+    inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(13,27,62,0.9); border-radius: 8px;
+    color: #e94560; font-weight: 600; font-size: 15px; pointer-events: none;
+  }
+  .drop-zone input[type="text"] { border: none; }
+  .drop-hint { font-size: 11px; color: #666; margin-top: 4px; }
+  input[type="number"] {
+    width: 80px; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #0f3460; background: #0d1b3e; color: #fff;
+    font-size: 15px; outline: none; text-align: center;
+  }
+  .check-group { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .check-group label {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: 20px;
+    border: 1px solid #0f3460; cursor: pointer; font-size: 14px;
+    color: #a0a0b0; transition: all 0.15s; user-select: none;
+  }
+  .check-group label:hover { border-color: #e94560; color: #fff; }
+  .check-group input[type="checkbox"] { display: none; }
+  .check-group input[type="checkbox"]:checked + span { color: #fff; }
+  .check-group label:has(input:checked) {
+    background: #e94560; border-color: #e94560; color: #fff;
+  }
+  .check-group label.select-all {
+    background: transparent; border-color: #555; font-size: 12px;
+    padding: 5px 12px; color: #888;
+  }
+  .check-group label.select-all:hover { border-color: #aaa; color: #ccc; }
+  .divider { width: 1px; height: 24px; background: #0f3460; margin: 0 4px; }
+  .row { display: flex; gap: 24px; align-items: flex-end; }
+  .row > div { flex: 1; }
+  button.run {
+    padding: 12px 32px; background: #e94560; color: #fff; border: none;
+    border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer;
+    transition: background 0.15s;
+  }
+  button.run:hover { background: #c73a52; }
+  button.run:disabled { background: #555; cursor: not-allowed; }
+  button.open {
+    padding: 10px 24px; background: #0f3460; color: #fff; border: 1px solid #1a4080;
+    border-radius: 8px; font-size: 14px; cursor: pointer; margin-left: 12px;
+  }
+  button.open:hover { background: #1a4080; }
+  .btn-row { display: flex; align-items: center; margin-top: 8px; }
+  #log {
+    background: #0d1b3e; border-radius: 8px; padding: 16px;
+    font-family: "Menlo", "Monaco", monospace; font-size: 13px;
+    line-height: 1.6; min-height: 120px; max-height: 250px;
+    overflow-y: auto; white-space: pre-wrap; color: #b0b0c0;
+    border: 1px solid #0f3460;
+  }
+  #log .hl { color: #e94560; font-weight: 600; }
+  #log .expr-header { color: #53c0f0; font-weight: 700; font-size: 14px; }
+  .results-section { margin-top: 16px; }
+  .results-section h3 { color: #53c0f0; font-size: 15px; margin: 12px 0 8px 0; text-transform: capitalize; }
+  .results-row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .results-row img {
+    height: 130px; border-radius: 8px; border: 2px solid #0f3460;
+    cursor: pointer; transition: border-color 0.15s;
+  }
+  .results-row img:hover { border-color: #e94560; }
+  .thumb { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .thumb-ts { font-size: 11px; color: #888; font-family: "Menlo", monospace; }
+  .spinner {
+    display: inline-block; width: 18px; height: 18px;
+    border: 2px solid #555; border-top-color: #e94560;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    vertical-align: middle; margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<h1>Doom Debates &mdash; Face Capture</h1>
+<div class="subtitle">Amazon Rekognition &mdash; Expression detection from video</div>
+<div class="nav">
+  <a href="/">&larr; Thumbnail Generator</a>
+  <a href="/revision">Revision</a>
+  <a href="/descriptions">Descriptions</a>
+</div>
+
+<div class="card">
+  <label class="section">Video File Path</label>
+  <div class="drop-zone" id="dropZone">
+    <input type="text" id="video" placeholder="/path/to/video.mp4 — or drag & drop a file here">
+  </div>
+  <div class="drop-hint">Drag a video file from Finder to fill in the path</div>
+</div>
+
+<div class="card">
+  <label class="section">Expressions (select one or more)</label>
+  <div class="check-group" id="exprGroup">
+    <label class="select-all" onclick="toggleAll(event)"><span>Select All</span></label>
+    <div class="divider"></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <label class="section">Output Folder</label>
+      <input type="text" id="output" value="{{ fc_captures_dir }}">
+    </div>
+    <div style="flex:0 0 150px">
+      <label class="section">Per Expression</label>
+      <input type="number" id="count" value="10" min="1" max="100">
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="btn-row">
+    <button class="run" id="runBtn" onclick="run()">Find Expressions</button>
+    <button class="open" id="openBtn" onclick="downloadAll()" style="display:none">Download All Captures</button>
+    <span id="spinnerSpan" style="display:none; margin-left: 12px;">
+      <span class="spinner"></span> Processing...
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <label class="section">Status</label>
+  <div id="log">Ready. Select expressions and click "Find Expressions".</div>
+  <div id="results" class="results-section"></div>
+</div>
+
+<script>
+const EXPRESSIONS = {{ fc_expressions }};
+
+const group = document.getElementById("exprGroup");
+EXPRESSIONS.forEach(expr => {
+  const label = document.createElement("label");
+  label.innerHTML = '<input type="checkbox" value="' + expr + '"><span>' + expr.charAt(0).toUpperCase() + expr.slice(1) + '</span>';
+  group.appendChild(label);
+});
+const first = group.querySelector('input[value="smile"]');
+if (first) first.checked = true;
+
+function toggleAll(e) {
+  e.preventDefault();
+  const boxes = document.querySelectorAll('#exprGroup input[type="checkbox"]');
+  const allChecked = Array.from(boxes).every(b => b.checked);
+  boxes.forEach(b => b.checked = !allChecked);
+}
+
+function getExprs() {
+  return Array.from(document.querySelectorAll('#exprGroup input:checked')).map(i => i.value);
+}
+
+function esc(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+async function run() {
+  const video = document.getElementById("video").value.trim();
+  const exprs = getExprs();
+  if (!video) { alert("Drag & drop a video file or enter a file path."); return; }
+  if (exprs.length === 0) { alert("Select at least one expression."); return; }
+
+  document.getElementById("runBtn").disabled = true;
+  document.getElementById("spinnerSpan").style.display = "inline";
+  document.getElementById("openBtn").style.display = "none";
+  document.getElementById("results").innerHTML = "";
+  document.getElementById("log").textContent = "";
+
+  const p = {
+    output: document.getElementById("output").value.trim(),
+    count: document.getElementById("count").value,
+    expressions: exprs.join(","),
+  };
+  // If video starts with "s3:" it's an S3 key from presigned upload
+  if (video.startsWith("s3:")) {
+    p.s3_key = video.slice(3);
+  } else {
+    p.video = video;
+  }
+  const params = new URLSearchParams(p);
+
+  await fetch("/fc_run?" + params.toString());
+
+  const poll = setInterval(async () => {
+    const resp = await fetch("/fc_status");
+    const data = await resp.json();
+    document.getElementById("log").innerHTML = data.log.map(l => {
+      if (l.startsWith("  #")) return '<span class="hl">' + esc(l) + '</span>';
+      if (l.startsWith("[") && l.includes("]")) return '<span class="expr-header">' + esc(l) + '</span>';
+      return esc(l);
+    }).join("\n");
+    document.getElementById("log").scrollTop = 999999;
+
+    if (data.done) {
+      clearInterval(poll);
+      document.getElementById("runBtn").disabled = false;
+      document.getElementById("spinnerSpan").style.display = "none";
+      if (data.output_dir) {
+        lastOutputDir = data.output_dir;
+        document.getElementById("openBtn").style.display = "inline-block";
+        showResults(data.result_dirs);
+      }
+    }
+  }, 500);
+}
+
+async function showResults(resultDirs) {
+  const container = document.getElementById("results");
+  container.innerHTML = "";
+  for (const [expr, dir] of Object.entries(resultDirs)) {
+    try {
+      const resp = await fetch("/fc_list_results?dir=" + encodeURIComponent(dir));
+      const items = await resp.json();
+      if (items.length === 0) continue;
+      const h3 = document.createElement("h3");
+      h3.textContent = expr;
+      container.appendChild(h3);
+      const row = document.createElement("div");
+      row.className = "results-row";
+      for (const item of items) {
+        const thumb = document.createElement("div");
+        thumb.className = "thumb";
+        const img = document.createElement("img");
+        img.src = "/fc_image?path=" + encodeURIComponent(item.crop_path);
+        img.title = "Click to view full size";
+        img.style.cursor = "pointer";
+        if (item.full_path) {
+          img.addEventListener("click", () => {
+            window.open("/fc_image?path=" + encodeURIComponent(item.full_path), "_blank");
+          });
+        }
+        thumb.appendChild(img);
+        if (item.score) {
+          const scoreBadge = document.createElement("div");
+          scoreBadge.style.cssText = "position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.7);color:#4fc3f7;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:bold;";
+          scoreBadge.textContent = (item.score * 100).toFixed(0);
+          scoreBadge.title = "Expression: " + (item.expr_score * 100).toFixed(0) + " | Quality: " + (item.qual_score * 100).toFixed(0);
+          thumb.style.position = "relative";
+          thumb.appendChild(scoreBadge);
+        }
+        const info = document.createElement("div");
+        info.className = "thumb-ts";
+        const parts = [];
+        if (item.timestamp) parts.push(item.timestamp);
+        if (item.score) parts.push("expr:" + (item.expr_score * 100).toFixed(0) + " qual:" + (item.qual_score * 100).toFixed(0));
+        if (item.full_path) {
+          parts.push('<a href="/fc_image?path=' + encodeURIComponent(item.full_path)
+            + '&download=1" style="color:#4fc3f7;">download</a>');
+        }
+        info.innerHTML = parts.join(" &mdash; ");
+        thumb.appendChild(info);
+        row.appendChild(thumb);
+      }
+      container.appendChild(row);
+    } catch(e) {}
+  }
+}
+
+let lastOutputDir = "";
+function downloadAll() {
+  const dir = lastOutputDir || document.getElementById("output").value;
+  if (dir) window.open("/fc_download_zip?dir=" + encodeURIComponent(dir), "_blank");
+}
+
+// Drag & drop support
+const dropZone = document.getElementById("dropZone");
+const videoInput = document.getElementById("video");
+
+["dragenter", "dragover"].forEach(evt => {
+  dropZone.addEventListener(evt, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropZone.classList.add("dragover");
+  });
+});
+["dragleave", "drop"].forEach(evt => {
+  dropZone.addEventListener(evt, e => {
+    e.preventDefault(); e.stopPropagation();
+    dropZone.classList.remove("dragover");
+  });
+});
+
+dropZone.addEventListener("drop", async e => {
+  let uri = e.dataTransfer.getData("text/uri-list");
+  if (uri) {
+    const line = uri.split(/\r?\n/).find(l => l && !l.startsWith("#"));
+    if (line) {
+      let path = line.trim();
+      if (path.startsWith("file://")) path = decodeURIComponent(path.slice(7));
+      videoInput.value = path;
+      return;
+    }
+  }
+  let plain = e.dataTransfer.getData("text/plain");
+  if (plain) {
+    plain = plain.trim();
+    if (plain.startsWith("file://")) { videoInput.value = decodeURIComponent(plain.slice(7)); return; }
+    if (plain.startsWith("/")) { videoInput.value = plain; return; }
+  }
+  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    const file = e.dataTransfer.files[0];
+    const sizeMB = (file.size / 1024 / 1024).toFixed(0);
+    try {
+      // Step 1: Get presigned S3 upload URL
+      videoInput.value = "Preparing upload for " + file.name + " (" + sizeMB + " MB)\u2026";
+      const presignResp = await fetch("/fc_presign?filename=" + encodeURIComponent(file.name));
+      const presignData = await presignResp.json();
+      if (presignData.error) { videoInput.value = ""; alert(presignData.error); return; }
+
+      // Step 2: Upload directly to S3 with progress tracking
+      const s3Ok = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const startTime = Date.now();
+        xhr.open("PUT", presignData.url);
+        xhr.setRequestHeader("Content-Type", "video/mp4");
+        xhr.upload.onprogress = (ev) => {
+          if (ev.lengthComputable) {
+            const pct = Math.round(ev.loaded / ev.total * 100);
+            const elapsed = (Date.now() - startTime) / 1000;
+            const speed = ev.loaded / elapsed;
+            const remaining = (ev.total - ev.loaded) / speed;
+            let eta = "";
+            if (elapsed > 2 && remaining > 0) {
+              if (remaining > 60) eta = " \u2014 ~" + Math.ceil(remaining / 60) + " min left";
+              else eta = " \u2014 ~" + Math.ceil(remaining) + "s left";
+            }
+            videoInput.value = "Uploading to S3: " + pct + "% (" + sizeMB + " MB)" + eta;
+          }
+        };
+        xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+        xhr.send(file);
+      });
+      if (!s3Ok) {
+        videoInput.value = "";
+        alert("S3 upload failed. Try again.");
+        return;
+      }
+
+      // Step 3: Store s3_key so fc_run uses it
+      videoInput.value = "s3:" + presignData.s3_key;
+    } catch(err) { videoInput.value = ""; alert("Upload failed: " + err.message); }
+  }
+});
+
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => e.preventDefault());
+</script>
+<div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
+</body>
+</html>

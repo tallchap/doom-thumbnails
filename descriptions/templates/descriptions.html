@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Doom Descriptions</title>
+<style>
+  body { font-family: Inter, system-ui, sans-serif; background:#060b1a; color:#fff; margin:0; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 22px; }
+  .card { background:#0d1b3e; border:1px solid #0f3460; border-radius:10px; padding:14px; margin-bottom:14px; }
+  textarea { width:100%; box-sizing:border-box; background:#091630; color:#fff; border:1px solid #2a3f6b; border-radius:8px; padding:10px; min-height:140px; font-size:14px; }
+  #primary { min-height:180px; }
+  #transcript { min-height:220px; }
+  #samples { min-height:140px; }
+  .btn { background:#4ade80; color:#06230f; border:none; border-radius:8px; padding:10px 14px; font-weight:700; cursor:pointer; }
+  .btn:disabled { opacity:.6; cursor:not-allowed; }
+  .muted { color:#9fb0d6; font-size:13px; }
+  pre { white-space:pre-wrap; word-break:break-word; background:#071229; border:1px solid #213b6c; border-radius:8px; padding:12px; min-height:240px; overflow:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 style="margin:0 0 6px;">Doom Descriptions</h1>
+  <div class="muted" style="margin-bottom:6px;">Iterate YouTube descriptions from transcript + channel voice. <a href="/" style="color:#4ade80;">Back</a></div>
+  <div class="card" style="padding:10px 12px; margin-bottom:12px;"><span class="muted">Models in use:</span> <strong>Gemini: gemini-3.1-pro-preview</strong> · <strong>Claude: claude-opus-4-6</strong> · <strong>GPT: gpt-5.4-pro</strong></div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Episode Title (optional)</h3>
+    <input id="title" type="text" placeholder="e.g. Episode 134 — ..." style="width:100%; box-sizing:border-box; background:#091630; color:#fff; border:1px solid #2a3f6b; border-radius:8px; padding:10px; font-size:14px;">
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Transcript</h3>
+    <textarea id="transcript" placeholder="Paste full video transcript"></textarea>
+    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <input type="file" id="transcriptFile" accept=".txt,text/plain" style="display:none;" />
+      <button type="button" class="btn" style="background:#0f3460;color:#fff;" onclick="document.getElementById('transcriptFile').click()">Attach .txt Transcript</button>
+      <span id="transcriptFileStatus" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Primary Description (base draft)</h3>
+    <textarea id="primary" placeholder="Paste the primary/current description here"></textarea>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">How to revise (main instruction)</h3>
+    <textarea id="revise" placeholder="Describe exactly how to revise the base description. This is the highest-priority instruction."></textarea>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Channel Samples</h3>
+    <textarea id="samples" placeholder="Paste example channel descriptions/tone samples">EXISTING DESCRIPTIONS AND TITLES FOR TONE REFERENCE
+TITLE: Episode 133 — Elon Musk's Insane Plan for Surviving AI Takeover (Feb 14, 2026)
+DESCRIPTION: Elon Musk just made a stunning admission about the insane future he's steering us toward. In a new interview with Dwarkesh Patel and John Collison on the Cheeky Pint podcast, Elon said that humanity can't expect to be "in charge" of AI for long, because humans will soon only have 1% of the combined total human+AI intelligence. Then, he claimed to have a plan to build AI overlords that will naturally support humanity's flourishing. In this mini episode, I react to Elon's remarks and expose why his plan for humanity's survival in the age of AI is dangerously flimsy.
+TITLE: Episode 132 — The Only Politician Thinking Clearly About Superintelligence — California Governor Candidate Zoltan Istvan (Feb 13, 2026)
+DESCRIPTION: California gubernatorial candidate Zoltan Istvan reveals his P(Doom) and makes the case for universal basic income and radical life extension.
+TITLE: Episode 131 — His P(Doom) Is Only 2.6% — AI Doom Debate with Bentham's Bulldog, a.k.a. Matthew Adelstein (Feb 10, 2026)
+DESCRIPTION: Get ready for a rematch with the one & only Bentham's Bulldog, a.k.a. Matthew Adelstein! Our first debate covered a wide range of philosophical topics. Today's Debate #2 is all about Matthew's new argument against the inevitability of AI doom. He comes out swinging with a calculated P(Doom) of just 2.6%, based on a multi-step probability chain that I challenge as potentially falling into a "Type 2 Conjunction Fallacy" (a.k.a. Multiple Stage Fallacy). We clash on whether to expect "alignment by default" and the nature of future AI architectures. While Matthew sees current RLHF success as evidence that AIs will likely remain compliant, I argue that we're building "Goal Engines" — superhuman optimization modules that act like nuclear cores wrapped in friendly personalities. We debate whether these engines can be safely contained, or if the capability to map goals to actions is inherently dangerous and prone to exfiltration. Despite our different forecasts (my 50% vs his sub-10%), we actually land in the "sane zone" together on some key policy ideas, like the potential necessity of a global pause. While Matthew's case for low P(Doom) hasn't convinced me, I consider his post and his engagement with me to be super high quality and good faith. We're not here to score points, we just want to better predict how the intelligence explosion will play out.
+TITLE: Episode 130 — What Dario Amodei Misses In "The Adolescence of Technology" — Reaction With MIRI's Harlan Stewart (Feb 4, 2026)
+DESCRIPTION: Harlan Stewart works in communications for the Machine Intelligence Research Institute (MIRI). In this episode, Harlan and I give our honest opinions on Dario Amodei's new essay "The Adolescence of Technology".
+TITLE: Episode 129 — Q&A: Is Liron too DISMISSIVE of AI Harms? + New Studio, Demis Would #PauseAI, AI Water Use Debate (Jan 27, 2026)
+DESCRIPTION: Check out the new Doom Debates studio in this Q&A with special guest Producer Ori! Liron gets into a heated discussion about whether doomers must validate short-term risks, like data center water usage, in order to build a successful political coalition. Originally streamed on Saturday, January 24.
+TITLE: Episode 128 — Taiwan's Cyber Ambassador-At-Large Says Humans & AI Can FOOM Together (Jan 20, 2026)
+DESCRIPTION: Audrey Tang was the youngest minister in Taiwanese history. Now she's working to align AI with democratic principles as Taiwan's Cyber Ambassador. In this debate, I probe her P(doom) and stress-test her vision for safe AI development.</textarea>
+  </div>
+
+
+  <div class="card">
+    <span class="muted">Generates 3 outputs per run</span>
+    <button class="btn" id="genBtn" onclick="generateDescriptions()" style="margin-left:8px;">Generate Description Candidates</button>
+    <button class="btn" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;color:#fff;margin-left:8px;">View last API prompt</button>
+    <span id="status" class="muted" style="margin-left:10px;"></span>
+    <div id="usage" class="muted" style="margin-top:10px;">Usage — calls: 0 | input chars: 0 | output chars: 0</div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Work Log</h3>
+    <pre id="logBox" style="min-height:90px;max-height:150px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(no logs yet)</pre>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Generated Output (3 Panes)</h3>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">
+      <div><div class="muted" style="margin-bottom:6px;">Gemini (gemini-3.1-pro-preview)</div><pre id="out1" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gemini output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">Claude (claude-opus-4-6)</div><pre id="out2" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(claude output)</pre></div>
+      <div><div class="muted" style="margin-bottom:6px;">GPT (gpt-5.4-pro)</div><pre id="out3" style="min-height:260px;max-height:420px;overflow:auto;white-space:pre-wrap;word-break:break-word;">(gpt output)</pre></div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function openLastApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site.');
+    return;
+  }
+  w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
+  try {
+    const r = await fetch('/last_api_call');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
+  }
+}
+
+function renderUsage(d) {
+  const calls = (d && typeof d.desc_calls === 'number') ? d.desc_calls : 0;
+  const inChars = (d && typeof d.desc_input_chars === 'number') ? d.desc_input_chars : 0;
+  const outChars = (d && typeof d.desc_output_chars === 'number') ? d.desc_output_chars : 0;
+  const el = document.getElementById('usage');
+  if (el) el.textContent = `Usage — calls: ${calls} | input chars: ${inChars.toLocaleString()} | output chars: ${outChars.toLocaleString()}`;
+}
+
+function renderLogs(d) {
+  const logs = (d && Array.isArray(d.log)) ? d.log : [];
+  const box = document.getElementById('logBox');
+  if (!box) return;
+  box.textContent = logs.length ? logs.slice(-120).join('\n') : '(no logs yet)';
+  box.scrollTop = box.scrollHeight;
+}
+
+const transcriptFileInput = document.getElementById('transcriptFile');
+if (transcriptFileInput) {
+  transcriptFileInput.addEventListener('change', async (e) => {
+    const f = (e.target.files || [])[0];
+    const status = document.getElementById('transcriptFileStatus');
+    if (!f) return;
+    const name = (f.name || '').toLowerCase();
+    const isTxt = name.endsWith('.txt') || f.type === 'text/plain';
+    if (!isTxt) {
+      if (status) status.textContent = 'Please attach a .txt file only.';
+      e.target.value = '';
+      return;
+    }
+    try {
+      const text = await f.text();
+      document.getElementById('transcript').value = text;
+      if (status) status.textContent = `Loaded: ${f.name} (${text.length.toLocaleString()} chars)`;
+    } catch (err) {
+      if (status) status.textContent = 'Failed to read transcript file.';
+    }
+  });
+}
+
+function renderOutputPanes(text) {
+  const panes = [
+    document.getElementById('out1'),
+    document.getElementById('out2'),
+    document.getElementById('out3'),
+  ];
+  const raw = (text || '').trim();
+  const chunks = raw ? raw.split('\n\n---\n\n') : [];
+  for (let i = 0; i < 3; i++) {
+    const pane = panes[i];
+    if (!pane) continue;
+    let chunk = (chunks[i] || '').trim();
+    if (!chunk) {
+      pane.textContent = `(output ${i + 1})`;
+      continue;
+    }
+    chunk = chunk.replace(/^##\s*Generation\s*\d+\s*/i, '').trim();
+    pane.textContent = chunk;
+  }
+}
+
+async function generateDescriptions() {
+  const btn = document.getElementById('genBtn');
+  const status = document.getElementById('status');
+  const title = document.getElementById('title').value.trim();
+  const primary = document.getElementById('primary').value.trim();
+  const revise = document.getElementById('revise').value.trim();
+  const transcript = document.getElementById('transcript').value.trim();
+  const samples = document.getElementById('samples').value.trim();
+  const count = 3;
+  if (!primary) { alert('Primary description is required.'); return; }
+  if (!revise) { alert('How to revise is required.'); return; }
+  if (!transcript) { alert('Transcript is required.'); return; }
+
+  btn.disabled = true;
+  status.textContent = 'Generating...';
+  renderOutputPanes('');
+
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('primary_description', primary);
+    fd.append('revise_instructions', revise);
+    fd.append('transcript', transcript);
+    fd.append('channel_samples', samples);
+    fd.append('count', String(count));
+
+    const resp = await fetch('/generate_descriptions', { method:'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) {
+      renderOutputPanes(data.error);
+      status.textContent = 'Failed';
+      return;
+    }
+    renderOutputPanes(data.output || '');
+    status.textContent = 'Done';
+    try {
+      const s = await fetch('/status');
+      const sd = await s.json();
+      renderUsage(sd);
+      renderLogs(sd);
+    } catch (_) {}
+  } catch (e) {
+    renderOutputPanes(String(e));
+    status.textContent = 'Failed';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+fetch('/status').then(r => r.json()).then((d) => { renderUsage(d); renderLogs(d); }).catch(() => {});
+</script>
+<div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
+</body>
+</html>

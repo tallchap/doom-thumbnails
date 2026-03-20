@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Doom Debates — Thumbnail Revision</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:#1a1a2e; color:#e0e0e0; margin:0; padding:24px; }
+  .card { background:#16213e; border:1px solid #0f3460; border-radius:12px; padding:20px; margin-bottom:16px; }
+  .base-card { border-color:#2b5fb3; box-shadow: inset 0 0 0 1px rgba(43,95,179,.35); }
+  .refs-card { border-color:#0f3460; }
+  .section-kicker { font-size:11px; color:#8fb2ff; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; font-weight:700; }
+  h1 { margin:0 0 8px; }
+  .subtitle { color:#a0a0b0; margin-bottom:14px; }
+  label { display:block; margin:10px 0 6px; color:#a0a0b0; font-size:13px; text-transform:uppercase; }
+  input[type="file"], textarea { width:100%; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:10px; }
+  textarea { min-height:90px; resize:vertical; }
+  .btn { background:#e94560; color:#fff; border:none; border-radius:8px; padding:10px 16px; font-weight:700; cursor:pointer; }
+  .btn:disabled { opacity:.6; cursor:not-allowed; }
+  .hint { color:#a0a0b0; font-size:12px; margin-top:6px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; margin-top:12px; }
+  .item { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
+  .item img { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; }
+  .item .meta { padding:8px; color:#a0a0b0; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .status { color:#4ade80; font-size:13px; margin-top:8px; }
+  .costline { color:#facc15; font-size:13px; margin-top:6px; }
+  .preview-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; margin-top:10px; }
+  .base-preview-grid { display:grid; grid-template-columns:minmax(260px, 420px); gap:10px; margin-top:10px; }
+  .preview { border:1px solid #0f3460; border-radius:8px; overflow:hidden; background:#0d1b3e; }
+  .preview img { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; }
+  .preview .cap { padding:6px 8px; color:#a0a0b0; font-size:11px; word-break:break-word; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .xbtn { border:none; background:#263b6a; color:#fff; border-radius:999px; width:20px; height:20px; line-height:20px; font-size:12px; cursor:pointer; padding:0; }
+  .xbtn:hover { background:#e94560; }
+  .paste-zone { margin-top:10px; border:2px dashed #2b5fb3; border-radius:10px; padding:14px; color:#9fb8e8; cursor:pointer; user-select:none; transition:all .15s; }
+  .paste-zone.active, .paste-zone.dragover { border-color:#4ade80; color:#c7f9d6; background:rgba(74,222,128,.08); }
+  .btn-sm { font-size:11px; padding:6px 8px; }
+  .logs { background:#0d1b3e; border:1px solid #0f3460; border-radius:8px; padding:10px; min-height:130px; max-height:240px; overflow:auto; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  .log-line { margin-bottom:4px; color:#b8c0d8; }
+</style>
+</head>
+<body>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+    <div>
+      <h1>Thumbnail Revision Page</h1>
+      <div class="subtitle">Model: <strong>gemini-3.1-flash-image-preview</strong></div>
+      <div style="margin-bottom:16px;"><a href="/" style="color:#4ade80;text-decoration:none;font-weight:600;">← Back to Main Generator</a></div>
+    </div>
+    <button onclick="openApiPreviewWindow()" style="background:#263b6a;color:#fff;border:1px solid #0f3460;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;white-space:nowrap;">Preview API Call</button>
+  </div>
+
+  <!-- Hidden textareas to hold custom prompt values (populated by preview pane) -->
+  <textarea id="borderPromptText" style="display:none;"></textarea>
+  <textarea id="revisionContextText" style="display:none;"></textarea>
+
+  <div class="card base-card">
+    <div class="section-kicker">STEP 1</div>
+    <h3 style="margin-top:0;">Original Thumbnail</h3>
+    <label>Thumbnail to modify</label>
+    <input type="file" id="baseFile" accept="image/*" style="display:none;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button type="button" class="btn" style="background:#0f3460;" onclick="openBasePicker()">+ Attach Original Thumbnail</button>
+      <span id="baseCount" class="hint"></span>
+    </div>
+    <div id="basePasteZone" class="paste-zone" tabindex="0">Drop image here, or paste (Ctrl+V / ⌘V) to set the primary thumbnail</div>
+    <div id="basePreview" class="base-preview-grid"></div>
+  </div>
+
+  <div class="card refs-card">
+    <div class="section-kicker">STEP 2</div>
+    <h3 style="margin-top:0;">Revision Prompt + Reference Examples (Below)</h3>
+    <label>Prompt to adjust the thumbnail</label>
+    <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
+
+    <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+      <button type="button" class="btn" style="background:#0f3460;" onclick="openAttachPicker()">+ Attach Reference Images</button>
+      <span id="attachCount" class="hint"></span>
+    </div>
+    <div id="refsPasteZone" class="paste-zone" tabindex="0">Drop reference images here, or paste (Ctrl+V / ⌘V)</div>
+    <div id="refsPreview" class="preview-grid"></div>
+
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="genCount" class="hint" style="margin:0;">Count</label>
+      <input id="genCount" type="number" min="1" max="50" value="10" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:8px;">
+        <input type="checkbox" id="addBorderCheck">
+        <span class="hint" style="margin:0;">Full Episode border</span>
+      </label>
+      <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
+      <button id="cancelBtn" class="btn" style="background:#ef4444;display:none;" onclick="cancelGeneration()">Cancel</button>
+    </div>
+    <div id="statusText" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Live Logs</h3>
+    <div id="logBox" class="logs"></div>
+    <details style="margin-top:8px;">
+      <summary style="color:#555;font-size:12px;cursor:pointer;">Debug: View actual API payloads</summary>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
+        <button class="btn btn-sm" type="button" onclick="openBorderApiCallWindow()" style="background:#0f3460;">View border API prompt</button>
+      </div>
+    </details>
+    <div id="costText" class="costline"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Results</h3>
+    <div id="resultsGrid" class="grid"></div>
+  </div>
+
+  <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
+
+<script>
+let pollInterval = null;
+let seen = new Set();
+let activeOutputDir = '';
+let followUpBasePath = '';
+let baseAttachmentFile = null;
+let pastedImages = [];
+let attachedImages = [];
+
+let defaultBorderPrompt = '';
+let defaultRevisionContext = '';
+let defaultRevisionTemplate = '';
+let brandCount = 0;
+let borderCount = 0;
+let promptsLoaded = false;
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function loadPromptDefaults() {
+  if (promptsLoaded) return Promise.resolve();
+  promptsLoaded = true;
+  return Promise.all([
+    fetch('/border_prompt').then(r=>r.json()).then(d=>{
+      defaultBorderPrompt = d.text || '';
+      if (!document.getElementById('borderPromptText').value) document.getElementById('borderPromptText').value = defaultBorderPrompt;
+    }),
+    fetch('/revision_context_prompt').then(r=>r.json()).then(d=>{
+      defaultRevisionContext = d.text || '';
+      if (!document.getElementById('revisionContextText').value) document.getElementById('revisionContextText').value = defaultRevisionContext;
+    }),
+    fetch('/revision_prompt_template').then(r=>r.json()).then(d=>{
+      defaultRevisionTemplate = d.text || '';
+      brandCount = d.brand_count || 0;
+      borderCount = d.border_count || 0;
+    }),
+  ]);
+}
+
+function openApiPreviewWindow() {
+  loadPromptDefaults().then(() => {
+    const revisionContext = document.getElementById('revisionContextText').value || defaultRevisionContext;
+    const borderPrompt = document.getElementById('borderPromptText').value || defaultBorderPrompt;
+    const userPrompt = document.getElementById('feedback').value.trim() || '[your revision prompt will appear here]';
+    const addBorder = document.getElementById('addBorderCheck').checked;
+    const attachCount = pastedImages.length + attachedImages.length;
+
+    // Build the revision prompt preview with placeholders filled
+    const revisionPromptPreview = defaultRevisionTemplate
+      .replace('{custom_prompt}', userPrompt)
+      .replace('#{variation_seed}', '#N')
+      .replace('#{variation_total}', '#M');
+
+    const w = window.open('', '_blank', 'width=760,height=900,scrollbars=yes');
+    if (!w) { alert('Popup blocked. Please allow popups for this site.'); return; }
+    w.document.write(`<!doctype html><html><head><title>API Call Preview</title><style>
+      *{box-sizing:border-box}
+      body{margin:0;font-family:Inter,system-ui,sans-serif;background:#0b1224;color:#e8ecf3;padding:20px}
+      h2{margin:0 0 16px;color:#8fb2ff;font-size:18px}
+      h3{margin:24px 0 12px;color:#4ade80;font-size:15px;border-bottom:1px solid #1f2f57;padding-bottom:6px}
+      .block{margin:8px 0;border-radius:8px;padding:12px;font-size:13px;line-height:1.5}
+      .grey{background:#1a1a2e;color:#888;border:1px solid #333}
+      .editable{background:#091630;border:1px solid #4ade80}
+      .block-label{font-size:11px;font-weight:700;color:#6b7fa8;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px}
+      pre{white-space:pre-wrap;word-break:break-word;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+      textarea{width:100%;min-height:120px;background:transparent;color:#fff;border:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;resize:vertical;outline:none;line-height:1.5}
+      .placeholder{color:#555;font-style:italic;padding:8px 0}
+      .btn-row{display:flex;gap:10px;margin-top:20px;justify-content:flex-end}
+      .btn{background:#4ade80;color:#06230f;border:none;border-radius:8px;padding:10px 18px;font-weight:700;cursor:pointer;font-size:14px}
+      .btn-reset{background:#263b6a;color:#fff;font-size:12px;padding:4px 10px;border:none;border-radius:6px;cursor:pointer;margin-top:4px}
+      .hidden{display:none}
+      .note{font-size:11px;color:#555;margin-top:4px}
+    </style></head><body>
+      <h2>API Call Preview</h2>
+
+      <h3>Revision Call &mdash; Contents[]</h3>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[1] &mdash; Revision Prompt (template, auto-filled)</div>
+        <pre>${esc(revisionPromptPreview)}</pre>
+      </div>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[2] &mdash; Source Thumbnail</div>
+        <div class="placeholder">[Base Thumbnail Image]</div>
+      </div>
+
+      <div class="block editable">
+        <div class="block-label">CONTENT[3] &mdash; Revision Context (editable)</div>
+        <textarea id="prevCtx">${esc(revisionContext)}</textarea>
+        <button class="btn-reset" onclick="document.getElementById('prevCtx').value=defaultCtx">Reset to Default</button>
+      </div>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[4&ndash;${3 + brandCount}] &mdash; Brand References</div>
+        <div class="placeholder">${brandCount} brand reference images (random selection from uploaded set)</div>
+      </div>
+
+      <div class="block grey ${attachCount ? '' : 'hidden'}" id="attachBlock">
+        <div class="block-label">CONTENT[${4 + brandCount}] &mdash; User-Attached References</div>
+        <div class="placeholder">${attachCount} user-attached reference image(s)</div>
+      </div>
+
+      <div class="block grey">
+        <div class="block-label">CONTENT[last] &mdash; Liron References (conditional)</div>
+        <div class="placeholder">Only included if prompt mentions "liron" (up to 2 images)</div>
+      </div>
+
+      <h3 id="borderHeader" class="${addBorder ? '' : 'hidden'}">Border Pass Call &mdash; Contents[]</h3>
+
+      <div id="borderSection" class="${addBorder ? '' : 'hidden'}">
+        <div class="block grey">
+          <div class="block-label">CONTENT[1&ndash;${borderCount}] &mdash; Border Reference Images</div>
+          <div class="placeholder">${borderCount} border reference images from assets/</div>
+        </div>
+
+        <div class="block grey">
+          <div class="block-label">CONTENT[${borderCount + 1}] &mdash; Generated Thumbnail</div>
+          <div class="placeholder">[Output from revision call above]</div>
+        </div>
+
+        <div class="block editable">
+          <div class="block-label">CONTENT[${borderCount + 2}] &mdash; Border Pass Prompt (editable)</div>
+          <textarea id="prevBorder">${esc(borderPrompt)}</textarea>
+          <button class="btn-reset" onclick="document.getElementById('prevBorder').value=defaultBorder">Reset to Default</button>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn" onclick="applyAndClose()">Save &amp; Close</button>
+      </div>
+      <div class="note">Editable fields (green border) will be used in the next generation. Grey blocks are system-managed.</div>
+
+      <scr` + `ipt>
+        const defaultCtx = ${JSON.stringify(defaultRevisionContext)};
+        const defaultBorder = ${JSON.stringify(defaultBorderPrompt)};
+        function applyAndClose() {
+          if (window.opener) {
+            window.opener.document.getElementById('revisionContextText').value = document.getElementById('prevCtx').value;
+            window.opener.document.getElementById('borderPromptText').value = document.getElementById('prevBorder') ? document.getElementById('prevBorder').value : '';
+          }
+          window.close();
+        }
+      </scr` + `ipt>
+    </body></html>`);
+    w.document.close();
+  });
+}
+
+async function openLastApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site.');
+    return;
+  }
+  w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
+  try {
+    const r = await fetch('/last_api_call?page=revision');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
+  }
+}
+
+async function openBorderApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Popup blocked.'); return; }
+  w.document.write('<!doctype html><html><head><title>Border Pass API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Border pass API call payload</div><pre>Loading\u2026</pre></body></html>');
+  try {
+    const r = await fetch('/last_border_api_call?page=revision');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No border pass API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load: ' + e;
+  }
+}
+
+function getPastedImageFiles(e) {
+  const out = [];
+  const items = (e.clipboardData && e.clipboardData.items) ? e.clipboardData.items : [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) out.push(file);
+    }
+  }
+  return out;
+}
+
+function getDroppedImageFiles(e) {
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) ? e.dataTransfer.files : []);
+  return files.filter(f => f && f.type && f.type.startsWith('image/'));
+}
+
+function setupDropZone(el, onFiles, onClick) {
+  if (!el) return;
+  if (onClick) el.addEventListener('click', onClick);
+  el.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    el.classList.add('dragover');
+  });
+  el.addEventListener('dragleave', () => el.classList.remove('dragover'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    el.classList.remove('dragover');
+    const dropped = getDroppedImageFiles(e);
+    if (!dropped.length) return;
+    onFiles(dropped);
+  });
+}
+
+function renderAttachmentsPreview() {
+  const baseWrap = document.getElementById('basePreview');
+  const refsWrap = document.getElementById('refsPreview');
+  baseWrap.innerHTML = '';
+  refsWrap.innerHTML = '';
+  const attachCount = document.getElementById('attachCount');
+  const baseCount = document.getElementById('baseCount');
+
+  if (followUpBasePath) {
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="/image?path=' + encodeURIComponent(followUpBasePath) + '"><div class="cap"><span>Base image</span><button class="xbtn" onclick="removeBaseImage()">×</button></div>';
+    baseWrap.appendChild(card);
+  } else if (baseAttachmentFile) {
+    const url = URL.createObjectURL(baseAttachmentFile);
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="' + url + '"><div class="cap"><span>' + esc(baseAttachmentFile.name || 'base_image.png') + '</span><button class="xbtn" onclick="removeBaseImage()">×</button></div>';
+    baseWrap.appendChild(card);
+  }
+
+  pastedImages.forEach((f, idx) => {
+    const url = URL.createObjectURL(f);
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="' + url + '"><div class="cap"><span>' + esc(f.name || ('pasted_' + (idx + 1) + '.png')) + '</span><button class="xbtn" onclick="removePastedRef(' + idx + ')">×</button></div>';
+    refsWrap.appendChild(card);
+  });
+
+  attachedImages.forEach((f, idx) => {
+    const url = URL.createObjectURL(f);
+    const card = document.createElement('div');
+    card.className = 'preview';
+    card.innerHTML = '<img src="' + url + '"><div class="cap"><span>' + esc(f.name || ('attach_' + (idx + 1) + '.png')) + '</span><button class="xbtn" onclick="removeAttachedRef(' + idx + ')">×</button></div>';
+    refsWrap.appendChild(card);
+  });
+
+  if (baseCount) {
+    baseCount.textContent = '';
+  }
+  if (attachCount) {
+    const totalRefs = attachedImages.length + pastedImages.length;
+    attachCount.textContent = totalRefs ? (totalRefs + ' ref image(s)') : '';
+  }
+}
+
+function openBasePicker() {
+  document.getElementById('baseFile').click();
+}
+
+function openAttachPicker() {
+  document.getElementById('attachFiles').click();
+}
+
+function removeBaseImage() {
+  followUpBasePath = '';
+  baseAttachmentFile = null;
+  const baseInput = document.getElementById('baseFile');
+  if (baseInput) baseInput.value = '';
+  renderAttachmentsPreview();
+}
+
+function removePastedRef(idx) {
+  pastedImages.splice(idx, 1);
+  renderAttachmentsPreview();
+}
+
+function removeAttachedRef(idx) {
+  attachedImages.splice(idx, 1);
+  renderAttachmentsPreview();
+}
+
+document.getElementById('baseFile').addEventListener('change', (e) => {
+  const files = Array.from(e.target.files || []);
+  baseAttachmentFile = files.length ? files[0] : null;
+  if (baseAttachmentFile) followUpBasePath = '';
+  renderAttachmentsPreview();
+  if (baseAttachmentFile) {
+    document.getElementById('statusText').textContent = 'Base thumbnail attached.';
+  }
+});
+
+document.getElementById('attachFiles').addEventListener('change', (e) => {
+  attachedImages = Array.from(e.target.files || []);
+  renderAttachmentsPreview();
+  if (attachedImages.length) {
+    document.getElementById('statusText').textContent = 'Attached ' + attachedImages.length + ' reference image file(s).';
+  }
+});
+
+const basePasteZone = document.getElementById('basePasteZone');
+if (basePasteZone) {
+  basePasteZone.addEventListener('focus', () => basePasteZone.classList.add('active'));
+  basePasteZone.addEventListener('blur', () => basePasteZone.classList.remove('active'));
+  basePasteZone.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    baseAttachmentFile = pasted[0];
+    followUpBasePath = '';
+    const baseInput = document.getElementById('baseFile');
+    if (baseInput) baseInput.value = '';
+    renderAttachmentsPreview();
+    document.getElementById('statusText').textContent = 'Primary thumbnail pasted.';
+  });
+  setupDropZone(basePasteZone, (dropped) => {
+    baseAttachmentFile = dropped[0];
+    followUpBasePath = '';
+    const baseInput = document.getElementById('baseFile');
+    if (baseInput) baseInput.value = '';
+    renderAttachmentsPreview();
+    document.getElementById('statusText').textContent = 'Primary thumbnail dropped.';
+  });
+}
+
+const refsPasteZone = document.getElementById('refsPasteZone');
+if (refsPasteZone) {
+  refsPasteZone.addEventListener('focus', () => refsPasteZone.classList.add('active'));
+  refsPasteZone.addEventListener('blur', () => refsPasteZone.classList.remove('active'));
+  refsPasteZone.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    pastedImages = pastedImages.concat(pasted);
+    renderAttachmentsPreview();
+    document.getElementById('statusText').textContent = 'Attached ' + pasted.length + ' pasted reference image(s).';
+  });
+  setupDropZone(refsPasteZone, (dropped) => {
+    attachedImages = attachedImages.concat(dropped);
+    renderAttachmentsPreview();
+    document.getElementById('statusText').textContent = 'Attached ' + dropped.length + ' dropped reference image(s).';
+  });
+}
+
+document.getElementById('feedback').addEventListener('paste', (e) => {
+  const pasted = getPastedImageFiles(e);
+  if (!pasted.length) return;
+  e.preventDefault();
+  pastedImages = pastedImages.concat(pasted);
+  renderAttachmentsPreview();
+  document.getElementById('statusText').textContent = 'Attached ' + pasted.length + ' pasted reference image(s) from clipboard.';
+});
+
+function clearAttachments() {
+  pastedImages = [];
+  attachedImages = [];
+  baseAttachmentFile = null;
+  const attachInput = document.getElementById('attachFiles');
+  const baseInput = document.getElementById('baseFile');
+  if (attachInput) attachInput.value = '';
+  if (baseInput) baseInput.value = '';
+  renderAttachmentsPreview();
+}
+
+function clearFollowUpBase() {
+  followUpBasePath = '';
+  renderAttachmentsPreview();
+}
+
+async function cancelGeneration() {
+  try {
+    await fetch('/cancel?page=revision', { method: 'POST' });
+    document.getElementById('statusText').textContent = 'Cancelling...';
+  } catch(e) {}
+}
+
+async function runRevision() {
+  const feedback = document.getElementById('feedback').value.trim();
+  if (!feedback) { alert('Enter revision feedback.'); return; }
+
+  const hasBaseAttachment = !!baseAttachmentFile;
+  if (!followUpBasePath && !hasBaseAttachment) {
+    alert('Attach a base thumbnail (or choose "Use as Base" from a prior result).');
+    return;
+  }
+
+  const countInput = document.getElementById('genCount');
+  const requestedCount = Math.max(1, Math.min(50, parseInt((countInput && countInput.value) || '10', 10) || 10));
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  document.getElementById('cancelBtn').style.display = '';
+  document.getElementById('statusText').textContent = 'Submitting revision request...';
+
+  const fd = new FormData();
+  if (followUpBasePath) {
+    fd.append('base_path', followUpBasePath);
+  } else {
+    fd.append('base_thumbnail', baseAttachmentFile, baseAttachmentFile.name || 'attached_base.png');
+  }
+  for (const f of pastedImages) fd.append('revision_images', f, f.name || 'pasted_ref.png');
+  for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
+  fd.append('prompt', feedback);
+  fd.append('count', String(requestedCount));
+  fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
+  const customBorderPrompt = (document.getElementById('borderPromptText') || {}).value || '';
+  if (customBorderPrompt) fd.append('border_prompt', customBorderPrompt);
+  const customRevisionContext = (document.getElementById('revisionContextText') || {}).value || '';
+  if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
+
+  try {
+    const resp = await fetch('/revise_upload', { method:'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+    activeOutputDir = data.output_dir || '';
+    document.getElementById('statusText').textContent = 'Running ' + requestedCount + ' parallel attempts...';
+    startPolling();
+  } catch (e) {
+    alert('Error: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+  }
+}
+
+function downloadResult(pathEncoded, idx) {
+  const a = document.createElement('a');
+  a.href = '/download?path=' + pathEncoded;
+  a.download = 'thumb_' + idx + '.png';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function addImageCard(img) {
+  if (activeOutputDir && (!img.path || !img.path.startsWith(activeOutputDir))) return;
+  if (seen.has(img.idx)) return;
+  seen.add(img.idx);
+  const grid = document.getElementById('resultsGrid');
+  const div = document.createElement('div');
+  div.className = 'item';
+  div.innerHTML = '<img src="/image?path=' + encodeURIComponent(img.path) + '">' +
+    '<div class="meta"><span>Attempt #' + img.idx + '</span><span style="display:flex;gap:6px;"><button class="btn btn-sm" onclick="setFollowUpBase(\'' + encodeURIComponent(img.path) + '\')">Use as Base</button><button class="btn btn-sm" style="background:#0f3460;" onclick="downloadResult(\'' + encodeURIComponent(img.path) + '\',' + img.idx + ')">Download</button></span></div>';
+  grid.appendChild(div);
+}
+
+function setFollowUpBase(encodedPath) {
+  followUpBasePath = decodeURIComponent(encodedPath);
+  baseAttachmentFile = null;
+  const baseInput = document.getElementById('baseFile');
+  if (baseInput) baseInput.value = '';
+  renderAttachmentsPreview();
+  document.getElementById('statusText').textContent = 'Follow-up base selected. Enter feedback and run again.';
+}
+
+function renderLogs(logs) {
+  const box = document.getElementById('logBox');
+  box.innerHTML = (logs || []).slice(-80).map(l => '<div class="log-line">' + esc(l) + '</div>').join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(async () => {
+    try {
+      const r = await fetch('/status?page=revision');
+      const d = await r.json();
+      (d.images || []).forEach(addImageCard);
+      renderLogs(d.log || []);
+      document.getElementById('statusText').textContent = d.running
+        ? `Generating ${d.completed}/${d.total}... (${d.errors || 0} errors)`
+        : '';
+      const runCost = (typeof d.cost === 'number') ? d.cost : 0;
+      const sessionCost = (typeof d.session_cost === 'number') ? d.session_cost : 0;
+      document.getElementById('costText').textContent = `API spend — run: $${runCost.toFixed(2)} | session: $${sessionCost.toFixed(2)}`;
+      if (d.done && !d.running) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+        document.getElementById('cancelBtn').style.display = 'none';
+      }
+    } catch (_) {}
+  }, 1000);
+}
+
+renderAttachmentsPreview();
+startPolling();
+</script>
+</body>
+</html>

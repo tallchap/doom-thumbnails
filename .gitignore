@@ -1,18 +1,45 @@
 # Ignore everything by default
 *
 
-# Only track the thumbnail generator files
+# Core app files
 !.gitignore
-!thumbnail_gen.py
+!app.py
+!config.py
+!auth.py
 !requirements.txt
 !Procfile
 !render.yaml
+
+# Modular Flask structure
+!shared/
+!shared/**
+!thumbnails/
+!thumbnails/**
+!revision/
+!revision/**
+!descriptions/
+!descriptions/**
+!face_capture/
+!face_capture/**
+
+# Ignore compiled Python files within tracked dirs
+__pycache__/
+*.pyc
+
+# Reference images & assets
 !doom_debates_thumbnails/
 !doom_debates_thumbnails/**
 !liron_reactions/
 !liron_reactions/**
-!FACE_CAPTURE_CONTEXT.md
 !assets/
 !assets/**
+
+# Docs
+!FACE_CAPTURE_CONTEXT.md
+
+# Legacy monolith (kept for reference)
+!thumbnail_gen.py
+
+# Format app (Next.js sub-service)
 !format-app/
 !format-app/**

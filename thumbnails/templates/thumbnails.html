@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Doom Debates — Thumbnail Generator v2</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e; color: #e0e0e0; padding: 24px;
+    min-height: 100vh;
+  }
+  h1 { color: #fff; font-size: 26px; margin-bottom: 8px; }
+  .subtitle { color: #a0a0b0; font-size: 14px; margin-bottom: 24px; }
+  .card {
+    background: #16213e; border-radius: 12px; padding: 24px;
+    margin-bottom: 16px; border: 1px solid #0f3460;
+  }
+  .card.hidden { display: none; }
+  label.section {
+    display: block; font-size: 13px; color: #a0a0b0; margin-bottom: 6px;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .field-hint { font-size: 12px; color: #666; margin-top: 4px; margin-bottom: 12px; }
+  input[type="text"], textarea {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    border: 1px solid #0f3460; background: #0d1b3e; color: #fff;
+    font-size: 15px; outline: none; font-family: inherit;
+  }
+  textarea { resize: vertical; }
+  input[type="text"]:focus, textarea:focus { border-color: #e94560; }
+  .mb { margin-bottom: 16px; }
+
+  .file-upload {
+    border: 2px dashed #0f3460; border-radius: 10px; padding: 20px;
+    text-align: center; cursor: pointer; transition: all 0.2s;
+    position: relative;
+  }
+  .file-upload:hover { border-color: #e94560; }
+  .file-upload.dragover { border-color: #e94560; background: rgba(233,69,96,0.08); }
+  .file-upload input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer;
+  }
+  .file-upload .upload-label { color: #a0a0b0; font-size: 14px; }
+  .file-upload .upload-label strong { color: #e94560; }
+  .file-previews {
+    display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;
+    justify-content: center;
+  }
+  .file-previews img {
+    width: 80px; height: 50px; object-fit: cover; border-radius: 6px;
+    border: 1px solid #0f3460;
+  }
+
+  .btn {
+    padding: 10px 24px; border-radius: 8px; border: none;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn-primary { background: #e94560; color: #fff; }
+  .btn-primary:hover { background: #d63851; }
+  .btn-primary:disabled { background: #555; cursor: not-allowed; }
+  .btn-secondary { background: #0f3460; color: #fff; }
+  .btn-secondary:hover { background: #1a4a80; }
+  .btn-secondary:disabled { background: #333; cursor: not-allowed; }
+  .btn-sm { padding: 6px 14px; font-size: 13px; }
+
+  .progress-bar {
+    width: 100%; height: 8px; background: #0d1b3e; border-radius: 4px;
+    overflow: hidden; margin: 12px 0;
+  }
+  .progress-fill {
+    height: 100%; background: #e94560; border-radius: 4px;
+    transition: width 0.3s;
+  }
+  .log {
+    background: #0d1b3e; border-radius: 8px; padding: 12px;
+    font-family: "SF Mono", Monaco, monospace; font-size: 12px;
+    max-height: 160px; overflow-y: auto; color: #a0a0b0;
+    margin-top: 12px;
+  }
+  .log div { margin-bottom: 2px; }
+
+  /* Source image gallery */
+  .source-gallery {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px;
+  }
+  .source-item {
+    position: relative; width: 120px; border-radius: 8px; overflow: hidden;
+    border: 2px solid #0f3460; background: #0d1b3e;
+  }
+  .source-item img { width: 100%; height: 80px; object-fit: cover; display: block; }
+  .source-item .source-title {
+    padding: 4px 6px; font-size: 10px; color: #a0a0b0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .source-item .remove-btn {
+    position: absolute; top: 4px; right: 4px; background: rgba(233,69,96,0.9);
+    color: #fff; border: none; border-radius: 50%; width: 22px; height: 22px;
+    cursor: pointer; font-size: 14px; line-height: 22px; text-align: center;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .source-item .remove-btn:hover { background: #e94560; }
+
+  /* Ideas list */
+  .idea-item {
+    display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+    background: #0d1b3e; border-radius: 8px; margin-bottom: 8px;
+    border: 1px solid #0f3460;
+  }
+  .idea-num {
+    color: #e94560; font-weight: 700; font-size: 16px; min-width: 28px;
+    padding-top: 2px;
+  }
+  .idea-text {
+    flex: 1; color: #e0e0e0; font-size: 14px; line-height: 1.4;
+  }
+  .idea-text textarea {
+    font-size: 14px; padding: 4px 8px; min-height: 40px;
+  }
+  .idea-actions { display: flex; gap: 6px; align-items: center; }
+  .idea-actions button {
+    background: none; border: none; cursor: pointer; font-size: 16px;
+    color: #a0a0b0; padding: 4px;
+  }
+  .idea-actions button:hover { color: #e94560; }
+
+  /* Thumbnail grid grouped by idea */
+  .idea-group {
+    margin-bottom: 24px; border: 1px solid #0f3460; border-radius: 10px;
+    padding: 16px; background: #0d1b3e;
+  }
+  .idea-group-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 12px; gap: 12px; flex-wrap: wrap;
+  }
+  .idea-group-header .idea-label {
+    color: #e94560; font-weight: 600; font-size: 14px; flex: 1;
+  }
+  .thumb-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .thumb-card {
+    position: relative; border-radius: 8px; overflow: hidden;
+    border: 3px solid transparent; cursor: pointer;
+    transition: border-color 0.15s, transform 0.1s;
+    background: #16213e;
+  }
+  .thumb-card:hover { transform: scale(1.02); }
+  .thumb-card.selected { border-color: #4ade80; }
+  .thumb-card.selected::after {
+    content: "\2713"; position: absolute; top: 8px; right: 8px;
+    background: #4ade80; color: #000; border-radius: 50%;
+    width: 28px; height: 28px; display: flex; align-items: center;
+    justify-content: center; font-weight: bold; font-size: 16px;
+  }
+  .thumb-card img {
+    width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover;
+  }
+  .thumb-label {
+    padding: 4px 8px; font-size: 11px; color: #a0a0b0;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .thumb-dl {
+    background: none; border: none; color: #a0a0b0; cursor: pointer;
+    font-size: 14px; padding: 2px 6px; border-radius: 4px;
+  }
+  .thumb-dl:hover { background: #0f3460; color: #4ade80; }
+
+  .actions-bar {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  }
+  .selected-count { color: #4ade80; font-weight: 600; font-size: 14px; }
+
+  .riff-panel {
+    margin: 12px 0; padding: 14px; background: #16213e;
+    border-radius: 8px; border: 1px solid #0f3460;
+  }
+  .riff-panel .file-upload { padding: 12px; }
+
+  .revision-panel {
+    margin-top: 16px; padding: 16px; background: #0d1b3e;
+    border-radius: 10px; border: 1px solid #0f3460;
+    display: none;
+  }
+  .revision-panel.visible { display: block; }
+  .revision-panel textarea { margin-bottom: 12px; }
+  .revision-panel .revision-actions { display: flex; gap: 12px; }
+
+  .section-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
+  }
+  .section-header h2 { color: #fff; font-size: 20px; }
+
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; background: #0f3460; color: #a0a0b0; }
+  .tag-required { background: #e94560; color: #fff; }
+
+  .cost-display {
+    position: fixed; top: 16px; left: 16px; background: #16213e;
+    border: 1px solid #0f3460; border-radius: 8px; padding: 8px 14px;
+    font-size: 13px; color: #a0a0b0; z-index: 100;
+  }
+  .cost-display strong { color: #4ade80; }
+
+  /* Computation window — fixed upper-right */
+  .compute-window {
+    position: fixed; top: 16px; right: 16px; width: 380px;
+    background: #16213e; border: 1px solid #0f3460; border-radius: 10px;
+    z-index: 200; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    font-size: 13px; overflow: hidden;
+    transition: height 0.2s;
+  }
+  .compute-window.collapsed {
+    height: auto;
+  }
+  .compute-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px; background: #0f3460; cursor: pointer;
+    user-select: none;
+  }
+  .compute-header .compute-title {
+    color: #fff; font-weight: 600; font-size: 13px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .compute-header .compute-toggle {
+    color: #a0a0b0; font-size: 18px; background: none; border: none;
+    cursor: pointer; padding: 0 4px;
+  }
+  .compute-header .compute-toggle:hover { color: #fff; }
+  .compute-body {
+    padding: 12px 14px; max-height: 400px; overflow-y: auto;
+  }
+  .compute-window.collapsed .compute-body { display: none; }
+  .compute-status {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    color: #a0a0b0;
+  }
+  .compute-status .status-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #555;
+    flex-shrink: 0;
+  }
+  .compute-status .status-dot.active {
+    background: #4ade80; animation: pulse-dot 1.5s infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .compute-progress {
+    width: 100%; height: 6px; background: #0d1b3e; border-radius: 3px;
+    overflow: hidden; margin: 8px 0;
+  }
+  .compute-progress-fill {
+    height: 100%; background: #e94560; border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .compute-log {
+    background: #0d1b3e; border-radius: 6px; padding: 8px 10px;
+    font-family: "SF Mono", Monaco, monospace; font-size: 11px;
+    max-height: 220px; overflow-y: auto; color: #a0a0b0;
+    margin-top: 8px;
+  }
+  .compute-log div { margin-bottom: 2px; }
+  .compute-cost {
+    margin-top: 8px; color: #a0a0b0; font-size: 12px;
+  }
+  .compute-cost strong { color: #4ade80; }
+
+  .step-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; border-radius: 50%; background: #e94560;
+    color: #fff; font-weight: 700; font-size: 14px; margin-right: 8px;
+    flex-shrink: 0;
+  }
+
+  .spinner {
+    display: inline-block; width: 18px; height: 18px;
+    border: 2px solid #a0a0b0; border-top-color: #e94560;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .btn-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<h1>Doom Debates — Thumbnail Generator</h1>
+<div class="subtitle">Model: Nano Banana 2 (gemini-3.1-flash-image-preview) — Idea-first workflow</div>
+<div style="margin-bottom:16px;"><a href="/revision" style="color:#4ade80;text-decoration:none;font-weight:600;">→ Open Thumbnail Revision Page</a></div>
+
+<!-- STEP 1: INPUTS -->
+<div class="card" id="inputCard">
+  <div class="section-header">
+    <h2><span class="step-num">1</span> Episode Info</h2>
+  </div>
+  <div style="margin-bottom:16px;">
+    <button class="btn" style="background:#7c3aed;width:100%;font-size:15px;padding:12px;" onclick="quickStart()">&#9889; Quick Start: Liron vs Daniel Kokotajlo — AI Doom Debate</button>
+  </div>
+
+  <div class="mb">
+    <label class="section">Episode Title <span class="tag tag-required">Required</span></label>
+    <input type="text" id="episodeTitle" placeholder="e.g. Is GPT-5 the End? with Daniel Kokotajlo">
+  </div>
+
+  <div class="mb">
+    <label class="section">Custom Prompt Info <span class="tag">Optional</span></label>
+    <textarea id="customPrompt" rows="2" placeholder="e.g. Guest: Daniel Kokotajlo, former OpenAI researcher. Focus on AI timelines and existential risk."></textarea>
+    <div class="field-hint">Any context that should inform the thumbnail concepts and generation.</div>
+  </div>
+
+  <div class="mb">
+    <label class="section">Episode Transcript <span class="tag">Optional</span></label>
+    <div class="file-upload" id="transcriptUpload">
+      <input type="file" id="transcriptFile" accept=".txt,.md,.text,.rtf,.doc,.docx,.pdf,.srt,.vtt">
+      <div class="upload-label"><strong>Click to browse</strong> or drag & drop a transcript file</div>
+      <div id="transcriptFileName" style="color:#4ade80;margin-top:8px;font-size:13px;"></div>
+    </div>
+  </div>
+
+  <div class="mb">
+    <label class="section">Speaker Images <span class="tag">Optional</span></label>
+    <div class="file-upload" id="speakerUpload">
+      <input type="file" id="speakerFiles" multiple accept="image/*">
+      <div class="upload-label"><strong>Click to browse</strong> or drag & drop speaker photos</div>
+      <div class="file-previews" id="speakerPreviews"></div>
+    </div>
+    <div class="field-hint">Photos of speakers — the generated faces will match these likenesses.</div>
+  </div>
+
+  <div class="mb">
+    <label class="section">Source Images <span class="tag">Optional</span></label>
+    <div class="file-upload" id="sourceUpload">
+      <input type="file" id="sourceFiles" multiple accept="image/*">
+      <div class="upload-label"><strong>Click to browse</strong> or drag & drop logos, reference visuals, etc.</div>
+      <div class="file-previews" id="sourcePreviews"></div>
+    </div>
+    <div class="field-hint">Logos, icons, or reference images to use as visual material (not faces).</div>
+  </div>
+
+  <div class="mb">
+    <label class="section">Additional Instructions <span class="tag">Optional — affects all future generations</span></label>
+    <textarea id="additionalInstructions" rows="2" placeholder="e.g. Make Liron look more concerned. Use mushroom clouds. Always include a doomsday clock."></textarea>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" id="gatherBtn" onclick="gatherSourceImages()">Gather Source Images from Web</button>
+    <button class="btn btn-primary" id="skipToIdeasBtn" onclick="skipToIdeas()">Skip to Generate Ideas</button>
+  </div>
+</div>
+
+<!-- STEP 2: SOURCE IMAGE GALLERY -->
+<div class="card hidden" id="sourceGalleryCard">
+  <div class="section-header">
+    <h2><span class="step-num">2</span> Source Images</h2>
+    <span id="gatherStatus" style="color:#a0a0b0;font-size:13px;"></span>
+  </div>
+  <p style="color:#a0a0b0;font-size:13px;margin-bottom:12px;">Click X to remove images you don't want. These will be used as visual reference in thumbnail generation.</p>
+  <div class="source-gallery" id="sourceGallery"></div>
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="proceedToIdeas()">Continue to Generate Ideas</button>
+    <button class="btn btn-secondary" onclick="document.getElementById('addMoreSourceInput').click()">Upload More</button>
+    <input type="file" id="addMoreSourceInput" multiple accept="image/*" style="display:none" onchange="addMoreSourceImages(this)">
+  </div>
+</div>
+
+<!-- STEP 3: IDEAS -->
+<div class="card hidden" id="ideasCard">
+  <div class="section-header">
+    <h2><span class="step-num">3</span> Thumbnail Ideas</h2>
+    <span id="ideasStatus" style="color:#a0a0b0;font-size:13px;"></span>
+  </div>
+  <div id="ideasList"></div>
+  <div class="btn-row">
+    <button class="btn btn-primary" id="genThumbsBtn" onclick="generateThumbnails()">Generate Thumbnails (3 per idea)</button>
+    <button class="btn btn-secondary" onclick="generateMoreIdeas()">Generate More Ideas</button>
+  </div>
+</div>
+
+<!-- STEP 4: THUMBNAILS GRID -->
+<div class="card hidden" id="gridCard">
+  <div class="section-header">
+    <h2 id="gridLabel">Select Your Favorites</h2>
+    <div class="actions-bar">
+      <span class="selected-count"><span id="selectedCount">0</span> selected</span>
+    </div>
+  </div>
+
+  <div class="revision-panel" id="revisionPanel">
+    <label class="section">Revise Selected</label>
+    <textarea id="revisionPrompt" rows="2" placeholder="e.g. Make the background darker, add more fire, change text to EXTINCTION..."></textarea>
+    <div class="mb" style="margin-top:8px;">
+      <label class="section">Attachments <span class="tag">Optional</span></label>
+      <div class="file-upload" id="revisionUpload" style="padding:12px;">
+        <input type="file" id="revisionFiles" multiple accept="image/*">
+        <div class="upload-label"><strong>Click to browse</strong> or drag & drop images to include in the revision</div>
+        <div class="file-previews" id="revisionPreviews"></div>
+      </div>
+    </div>
+    <div class="revision-actions">
+      <button class="btn btn-primary btn-sm" onclick="startRevision()">Revise with Prompt</button>
+    </div>
+  </div>
+
+  <div id="ideaGroupsContainer"></div>
+
+</div>
+
+<!-- COMPUTATION WINDOW — fixed upper-right -->
+<div class="compute-window collapsed" id="computeWindow">
+  <div class="compute-header" onclick="toggleComputeWindow()">
+    <div class="compute-title">
+      <span class="status-dot" id="computeDot"></span>
+      <span id="computeTitle">Computation</span>
+    </div>
+    <button class="compute-toggle" id="computeToggleBtn">&#9660;</button>
+  </div>
+  <div class="compute-body" id="computeBody">
+    <div class="compute-status">
+      <span id="computePhase">Idle</span>
+      <span id="computeProgressText" style="margin-left:auto;"></span>
+    </div>
+    <div class="compute-progress">
+      <div class="compute-progress-fill" id="computeProgressFill" style="width:0%"></div>
+    </div>
+    <div class="compute-log" id="computeLog"></div>
+    <div style="margin-top:8px; display:flex; gap:8px;">
+      <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
+    </div>
+    <div class="compute-cost" id="computeCost" style="display:none;">
+      Est. cost: <strong id="costAmount">$0.00</strong>
+    </div>
+  </div>
+</div>
+
+<!-- Session cost display — fixed top-left -->
+<div class="cost-display" id="sessionCostDisplay">Session cost: <strong>$0.00</strong></div>
+
+<script>
+// ----- State -----
+let ideas = [];
+let sourceImages = [];  // {url, thumbnail, title, selected, bytes_uploaded}
+let selected = new Set();
+let allImages = [];
+let pollInterval = null;
+let transcript = '';
+
+// ----- Client-side session cost tracking -----
+// Persists in sessionStorage so it survives page refreshes and server restarts.
+let clientSessionCost = parseFloat(sessionStorage.getItem('doomSessionCost') || '0');
+let lastServerCost = 0;  // tracks the last server-reported session_cost to detect deltas
+
+function updateCostDisplay(cost) {
+  clientSessionCost = cost;
+  sessionStorage.setItem('doomSessionCost', cost.toFixed(4));
+  const fixedCost = document.getElementById('sessionCostDisplay');
+  if (fixedCost) fixedCost.innerHTML = 'Session cost: <strong>$' + cost.toFixed(2) + '</strong>';
+  const costAmount = document.getElementById('costAmount');
+  if (costAmount) {
+    costAmount.textContent = '$' + cost.toFixed(2);
+    document.getElementById('computeCost').style.display = 'block';
+  }
+}
+
+async function openLastApiCallWindow() {
+  const w = window.open('', '_blank');
+  if (!w) {
+    alert('Popup blocked. Please allow popups for this site.');
+    return;
+  }
+  w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
+  try {
+    const r = await fetch('/last_api_call');
+    const data = await r.json();
+    const text = (data && data.text) ? data.text : 'No API call recorded yet.';
+    w.document.querySelector('pre').textContent = text;
+  } catch (e) {
+    w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
+  }
+}
+
+// Show saved cost immediately on page load
+updateCostDisplay(clientSessionCost);
+
+// Fetch current status on page load to sync cost & enable riff buttons if idle
+fetch('/status').then(r => r.json()).then(data => {
+  // Sync server cost into client tracking
+  if (data.session_cost > 0) {
+    lastServerCost = data.session_cost;
+    // Take the higher of client-tracked or server-reported
+    if (data.session_cost > clientSessionCost) {
+      updateCostDisplay(data.session_cost);
+    }
+  }
+  // If server is idle (not running), make sure riff buttons are enabled
+  if (data.done || !data.running) {
+    setRiffButtonsDisabled(false);
+  }
+}).catch(() => {});
+
+// ----- File upload helpers -----
+function setupFileUpload(uploadId, inputId, previewId) {
+  const zone = document.getElementById(uploadId);
+  const input = document.getElementById(inputId);
+  const previews = document.getElementById(previewId);
+  if (!zone || !input) return;
+
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) {
+      const dt = new DataTransfer();
+      for (const f of input.files) dt.items.add(f);
+      for (const f of e.dataTransfer.files) dt.items.add(f);
+      input.files = dt.files;
+      if (previews) showPreviews(input, previews);
+    }
+  });
+  if (previews) input.addEventListener('change', () => showPreviews(input, previews));
+}
+
+function showPreviews(input, container) {
+  container.innerHTML = '';
+  for (const file of input.files) {
+    if (!file.type.startsWith('image/')) continue;
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    container.appendChild(img);
+  }
+}
+
+setupFileUpload('speakerUpload', 'speakerFiles', 'speakerPreviews');
+setupFileUpload('sourceUpload', 'sourceFiles', 'sourcePreviews');
+setupFileUpload('revisionUpload', 'revisionFiles', 'revisionPreviews');
+
+// Transcript
+(function() {
+  const zone = document.getElementById('transcriptUpload');
+  const input = document.getElementById('transcriptFile');
+  const nameEl = document.getElementById('transcriptFileName');
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) {
+      input.files = e.dataTransfer.files;
+      nameEl.textContent = input.files[0].name;
+    }
+  });
+  input.addEventListener('change', () => {
+    nameEl.textContent = input.files.length ? input.files[0].name : '';
+  });
+})();
+
+// ----- Step 2: Gather Source Images -----
+async function gatherSourceImages() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+
+  const btn = document.getElementById('gatherBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Searching...';
+
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('custom_prompt', document.getElementById('customPrompt').value);
+
+    const resp = await fetch('/gather_images', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    sourceImages = (data.images || []).map((img, i) => ({...img, id: i, removed: false}));
+    renderSourceGallery();
+    document.getElementById('sourceGalleryCard').classList.remove('hidden');
+    document.getElementById('gatherStatus').textContent = `Found ${sourceImages.length} images`;
+  } catch(e) {
+    alert('Error: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Gather Source Images from Web';
+  }
+}
+
+function renderSourceGallery() {
+  const gallery = document.getElementById('sourceGallery');
+  gallery.innerHTML = '';
+  sourceImages.forEach((img, i) => {
+    if (img.removed) return;
+    const div = document.createElement('div');
+    div.className = 'source-item';
+    div.innerHTML =
+      '<img src="' + escHtml(img.thumbnail || img.url) + '" onerror="this.parentElement.style.display=\'none\'">' +
+      '<div class="source-title">' + escHtml(img.title || img.query || '') + '</div>' +
+      '<button class="remove-btn" onclick="removeSourceImage(' + i + ')">&times;</button>';
+    gallery.appendChild(div);
+  });
+}
+
+function removeSourceImage(idx) {
+  sourceImages[idx].removed = true;
+  renderSourceGallery();
+}
+
+function addMoreSourceImages(input) {
+  for (const file of input.files) {
+    const url = URL.createObjectURL(file);
+    sourceImages.push({url: url, thumbnail: url, title: file.name, removed: false, localFile: file});
+  }
+  renderSourceGallery();
+}
+
+function quickStart() {
+  document.getElementById('episodeTitle').value = 'Liron Shapira vs Daniel Kokotajlo \u2014 AI Doom Debate';
+  skipToIdeas();
+}
+
+function skipToIdeas() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+  proceedToIdeas();
+}
+
+// ----- Step 3: Generate Ideas -----
+async function proceedToIdeas() {
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+
+  const card = document.getElementById('ideasCard');
+  card.classList.remove('hidden');
+  document.getElementById('ideasStatus').innerHTML = '<span class="spinner"></span> Generating ideas...';
+
+  // Read transcript if provided (truncate — server only uses first 1500 chars anyway)
+  const fileInput = document.getElementById('transcriptFile');
+  if (fileInput.files.length > 0 && !transcript) {
+    transcript = await fileInput.files[0].text();
+  }
+
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('custom_prompt', document.getElementById('customPrompt').value);
+    fd.append('transcript', transcript.slice(0, 5000));
+    fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+
+    const resp = await fetch('/generate_ideas', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); document.getElementById('ideasStatus').textContent = 'Error'; return; }
+
+    ideas = data.ideas || [];
+    renderIdeas();
+    document.getElementById('ideasStatus').textContent = ideas.length + ' ideas generated';
+  } catch(e) {
+    alert('Error: ' + e);
+    document.getElementById('ideasStatus').textContent = 'Error';
+  }
+}
+
+async function generateMoreIdeas() {
+  flushActiveEdits();
+  const title = document.getElementById('episodeTitle').value.trim();
+  if (!title) { alert('Please enter an episode title.'); return; }
+
+  document.getElementById('ideasCard').classList.remove('hidden');
+  document.getElementById('ideasStatus').innerHTML = '<span class="spinner"></span> Generating more ideas...';
+
+  try {
+    const fd = new FormData();
+    fd.append('title', title);
+    fd.append('custom_prompt', document.getElementById('customPrompt').value);
+    fd.append('transcript', transcript.slice(0, 5000));
+    fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+    fd.append('existing_ideas', JSON.stringify(ideas));
+
+    const resp = await fetch('/more_ideas', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    const newIdeas = data.ideas || [];
+    ideas = ideas.concat(newIdeas);
+    renderIdeas();
+    document.getElementById('ideasStatus').textContent = ideas.length + ' ideas total';
+  } catch(e) {
+    alert('Error: ' + e);
+  }
+}
+
+function renderIdeas() {
+  const list = document.getElementById('ideasList');
+  list.innerHTML = '';
+  ideas.forEach((idea, i) => {
+    const div = document.createElement('div');
+    div.className = 'idea-item';
+    div.id = 'idea-' + i;
+    div.innerHTML =
+      '<span class="idea-num">' + (i+1) + '</span>' +
+      '<div class="idea-text" id="idea-text-' + i + '">' + escHtml(idea) + '</div>' +
+      '<div class="idea-actions">' +
+        '<button onclick="editIdea(' + i + ')" title="Edit">&#9998;</button>' +
+        '<button onclick="deleteIdea(' + i + ')" title="Delete">&times;</button>' +
+      '</div>';
+    list.appendChild(div);
+  });
+}
+
+function editIdea(idx) {
+  const el = document.getElementById('idea-text-' + idx);
+  const current = ideas[idx];
+  el.innerHTML = '<textarea oninput="ideas[' + idx + '] = this.value.trim() || ideas[' + idx + ']" onblur="finishEditIdea(' + idx + ')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();this.blur();}">' + escHtml(current) + '</textarea>';
+  el.querySelector('textarea').focus();
+}
+
+function finishEditIdea(idx) {
+  // ideas[idx] is already updated by oninput — just re-render to show static text
+  renderIdeas();
+}
+
+function deleteIdea(idx) {
+  ideas.splice(idx, 1);
+  renderIdeas();
+}
+
+// ----- Helpers -----
+function flushActiveEdits() {
+  // Save any idea that's currently being edited in a textarea
+  const ideasList = document.getElementById('ideasList');
+  if (!ideasList) return;
+  const textareas = ideasList.querySelectorAll('textarea');
+  textareas.forEach(ta => {
+    const match = ta.parentElement && ta.parentElement.id && ta.parentElement.id.match(/idea-text-(\d+)/);
+    if (match) {
+      const idx = parseInt(match[1]);
+      const val = ta.value.trim();
+      if (val && idx < ideas.length) ideas[idx] = val;
+    }
+  });
+}
+
+function setRiffButtonsDisabled(disabled) {
+  // Disable BOTH the outer "Riff" toggle buttons AND the inner
+  // "Generate Riffs" buttons inside open panels.
+  document.querySelectorAll('.riff-btn, .riff-generate-btn').forEach(btn => {
+    btn.disabled = disabled;
+    if (disabled) btn.title = 'Wait for current generation to finish';
+    else btn.title = '';
+  });
+}
+
+// ----- Step 4: Generate Thumbnails -----
+async function generateThumbnails() {
+  flushActiveEdits();
+  if (ideas.length === 0) { alert('No ideas to generate thumbnails for.'); return; }
+
+  const btn = document.getElementById('genThumbsBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Starting...';
+
+  const fd = new FormData();
+  fd.append('title', document.getElementById('episodeTitle').value);
+  fd.append('ideas', JSON.stringify(ideas));
+  fd.append('custom_prompt', document.getElementById('customPrompt').value);
+  fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+  fd.append('transcript', transcript.slice(0, 5000));
+
+  // Attach speaker images
+  for (const f of document.getElementById('speakerFiles').files) {
+    fd.append('speakers', f);
+  }
+
+  // Attach locally uploaded source images
+  for (const f of document.getElementById('sourceFiles').files) {
+    fd.append('sources', f);
+  }
+
+  // Attach web-gathered source images (send URLs for server to download)
+  const selectedSources = sourceImages.filter(s => !s.removed).map(s => s.url).filter(Boolean);
+  fd.append('source_urls', JSON.stringify(selectedSources));
+
+  try {
+    const resp = await fetch('/generate_from_ideas', { method: 'POST', body: fd, credentials: 'same-origin' });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = 'Generate Thumbnails (3 per idea)'; return; }
+
+    selected.clear();
+    allImages = [];
+    document.getElementById('ideaGroupsContainer').innerHTML = '';
+    updateSelectedUI();
+
+    // Sync cost baseline — take current value so deltas apply correctly
+    fetch('/status').then(r => r.json()).then(d => {
+      if (d.session_cost > lastServerCost) lastServerCost = d.session_cost;
+    }).catch(() => {});
+
+    document.getElementById('gridCard').classList.remove('hidden');
+    showComputeWindow();
+    startPolling();
+  } catch(e) {
+    alert('Error: ' + e);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Generate Thumbnails (3 per idea)';
+  }
+}
+
+function toggleRiffPanel(ideaIdx) {
+  const panel = document.getElementById('riff-panel-' + ideaIdx);
+  if (!panel) return;
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function showRiffPreviews(ideaIdx) {
+  const input = document.getElementById('riff-images-' + ideaIdx);
+  const container = document.getElementById('riff-previews-' + ideaIdx);
+  if (!input || !container) return;
+  container.innerHTML = '';
+  for (const file of input.files) {
+    if (!file.type.startsWith('image/')) continue;
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    container.appendChild(img);
+  }
+}
+
+async function executeRiff(ideaIdx) {
+  flushActiveEdits();
+  const idea = ideas[ideaIdx];
+  if (!idea) { alert('Idea not found at index ' + ideaIdx); return; }
+
+  const riffPrompt = (document.getElementById('riff-prompt-' + ideaIdx) || {}).value || '';
+  const riffImagesInput = document.getElementById('riff-images-' + ideaIdx);
+
+  const riffCountInput = document.getElementById('riff-count-' + ideaIdx);
+  const riffCount = riffCountInput ? parseInt(riffCountInput.value) || 3 : 3;
+
+  // Disable ALL riff buttons immediately to prevent concurrent requests
+  setRiffButtonsDisabled(true);
+
+  const fd = new FormData();
+  fd.append('idea_text', idea);
+  fd.append('idea_idx', ideaIdx);
+  fd.append('custom_prompt', (document.getElementById('customPrompt') || {}).value || '');
+  fd.append('additional_instructions', (document.getElementById('additionalInstructions') || {}).value || '');
+  fd.append('riff_prompt', riffPrompt);
+  fd.append('riff_count', riffCount);
+
+  // Do NOT resend speakers/sources/source_urls — server reuses stored refs from initial generation.
+  // Only send riff-specific images if the user added them.
+  if (riffImagesInput && riffImagesInput.files.length > 0) {
+    for (const f of riffImagesInput.files) {
+      fd.append('riff_images', f);
+    }
+  }
+
+  try {
+    const resp = await fetch('/riff_idea', { method: 'POST', body: fd, credentials: 'same-origin' });
+    if (!resp.ok) {
+      alert('Riff request failed (HTTP ' + resp.status + '). Try again.');
+      setRiffButtonsDisabled(false);
+      return;
+    }
+    const data = await resp.json();
+    if (data.error) {
+      alert(data.error);
+      setRiffButtonsDisabled(false);
+      return;
+    }
+
+    // Register riff as a new idea so addImageToGrid can find its text
+    const riffIdeaIdx = data.riff_idea_idx;
+    while (ideas.length <= riffIdeaIdx) ideas.push('');
+    ideas[riffIdeaIdx] = '(Riff on Idea ' + (ideaIdx + 1) + ') ' + idea;
+
+    // Collapse the riff panel
+    const panel = document.getElementById('riff-panel-' + ideaIdx);
+    if (panel) panel.style.display = 'none';
+
+    // Sync cost baseline — take current value so deltas apply correctly
+    fetch('/status').then(r => r.json()).then(d => {
+      if (d.session_cost > lastServerCost) lastServerCost = d.session_cost;
+    }).catch(() => {});
+
+    document.getElementById('gridCard').classList.remove('hidden');
+    showComputeWindow();
+    startPolling();
+    // Buttons will be re-enabled by pollStatus when data.done === true
+  } catch(e) {
+    alert('Riff error: ' + e);
+    setRiffButtonsDisabled(false);
+  }
+}
+
+// ----- Computation Window -----
+function toggleComputeWindow() {
+  const win = document.getElementById('computeWindow');
+  const btn = document.getElementById('computeToggleBtn');
+  if (win.classList.contains('collapsed')) {
+    win.classList.remove('collapsed');
+    btn.innerHTML = '&#9650;';
+  } else {
+    win.classList.add('collapsed');
+    btn.innerHTML = '&#9660;';
+  }
+}
+
+function showComputeWindow() {
+  const win = document.getElementById('computeWindow');
+  win.style.display = 'block';
+  win.classList.remove('collapsed');
+  document.getElementById('computeToggleBtn').innerHTML = '&#9650;';
+}
+
+// ----- Polling -----
+function startPolling() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pollStatus, 500);
+}
+
+function pollStatus() {
+  fetch('/status').then(r => r.json()).then(data => {
+    const doneCount = data.completed + data.errors;
+    const pct = data.total > 0 ? (doneCount / data.total * 100) : 0;
+
+    // Update computation window
+    document.getElementById('computeProgressFill').style.width = pct + '%';
+    document.getElementById('computeProgressText').textContent =
+      data.completed + ' / ' + data.total + (data.errors > 0 ? ' (' + data.errors + ' failed)' : '');
+
+    const phaseNames = {
+      round1: 'Generating Thumbnails...',
+      riff: 'Riffing on Idea...',
+      revision: 'Revising...',
+      variation: 'Generating Variations...'
+    };
+    const phaseName = phaseNames[data.phase] || 'Generating...';
+    document.getElementById('computePhase').textContent = phaseName;
+    document.getElementById('computeTitle').textContent = data.done ? 'Computation — Done' : phaseName;
+
+    // Status dot
+    const dot = document.getElementById('computeDot');
+    if (data.done) {
+      dot.classList.remove('active');
+    } else {
+      dot.classList.add('active');
+    }
+
+    // Log
+    const logArea = document.getElementById('computeLog');
+    logArea.innerHTML = data.log.slice(-50).map(l => '<div>' + escHtml(l) + '</div>').join('');
+    logArea.scrollTop = logArea.scrollHeight;
+
+    // Update cost (session-wide aggregate, tracked client-side)
+    if (data.session_cost !== undefined && data.session_cost > 0) {
+      const delta = data.session_cost - lastServerCost;
+      if (delta > 0) {
+        clientSessionCost += delta;
+        lastServerCost = data.session_cost;
+      }
+      // Always take the max of server vs client
+      const displayCost = Math.max(clientSessionCost, data.session_cost);
+      updateCostDisplay(displayCost);
+    }
+
+    // Add new images to grid
+    let addedNew = false;
+    while (allImages.length < data.images.length) {
+      const img = data.images[allImages.length];
+      allImages.push(img);
+      addImageToGrid(img);
+      addedNew = true;
+    }
+
+    // Auto-scroll to the newest group when new images arrive
+    if (addedNew) {
+      const container = document.getElementById('ideaGroupsContainer');
+      const groups = container.children;
+      if (groups.length > 0) {
+        const lastGroup = groups[groups.length - 1];
+        lastGroup.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    // Disable riff buttons while generating, re-enable when done
+    setRiffButtonsDisabled(!data.done);
+
+    if (data.done) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+      // Collapse compute window after a delay
+      setTimeout(() => {
+        const win = document.getElementById('computeWindow');
+        // Don't collapse if user is hovering
+        win.classList.add('collapsed');
+        document.getElementById('computeToggleBtn').innerHTML = '&#9660;';
+      }, 3000);
+    }
+  }).catch(() => {});
+}
+
+function addImageToGrid(img) {
+  const ideaIdx = img.idea_idx;
+  const container = document.getElementById('ideaGroupsContainer');
+
+  // Find or create idea group
+  let group = document.getElementById('idea-group-' + ideaIdx);
+  if (!group) {
+    group = document.createElement('div');
+    group.className = 'idea-group';
+    group.id = 'idea-group-' + ideaIdx;
+
+    const ideaText = (ideaIdx >= 0 && ideaIdx < ideas.length) ? ideas[ideaIdx] : 'Variation';
+    group.innerHTML =
+      '<div class="idea-group-header">' +
+        '<div class="idea-label">' + (ideaIdx >= 0 ? '<strong>Idea ' + (ideaIdx+1) + ':</strong> ' : '') + escHtml(ideaText) + '</div>' +
+      '</div>' +
+      '<div class="thumb-grid" id="idea-grid-' + ideaIdx + '"></div>';
+    container.appendChild(group);
+  }
+
+  const grid = document.getElementById('idea-grid-' + ideaIdx);
+  const card = document.createElement('div');
+  card.className = 'thumb-card';
+  card.dataset.idx = img.idx;
+  card.onclick = () => toggleSelect(img.idx);
+  card.innerHTML =
+    '<img src="/image?path=' + encodeURIComponent(img.path) + '" loading="lazy">' +
+    '<div class="thumb-label"><span>#' + img.idx + '</span>' +
+    '<button class="thumb-dl" onclick="event.stopPropagation(); downloadImage(\'' + encodeURIComponent(img.path) + '\', \'thumb_' + img.idx + '.png\')" title="Download">&#8681;</button></div>';
+  grid.appendChild(card);
+}
+
+// ----- Selection -----
+function toggleSelect(idx) {
+  const card = document.querySelector('[data-idx="' + idx + '"]');
+  if (!card) return;
+  if (selected.has(idx)) {
+    selected.delete(idx);
+    card.classList.remove('selected');
+  } else {
+    selected.add(idx);
+    card.classList.add('selected');
+  }
+  updateSelectedUI();
+}
+
+function updateSelectedUI() {
+  document.getElementById('selectedCount').textContent = selected.size;
+  const panel = document.getElementById('revisionPanel');
+  if (selected.size > 0) panel.classList.add('visible');
+  else panel.classList.remove('visible');
+}
+
+function startRevision() {
+  const prompt = document.getElementById('revisionPrompt').value.trim();
+  if (!prompt) { alert('Enter revision instructions.'); return; }
+  const indices = Array.from(selected).join(',');
+
+  // Determine which idea(s) the selected images belong to for labeling
+  const selectedIdeas = new Set();
+  allImages.filter(img => selected.has(img.idx)).forEach(img => {
+    if (img.idea_idx >= 0 && img.idea_idx < ideas.length) {
+      selectedIdeas.add(img.idea_idx);
+    }
+  });
+  const sourceIdeasJson = JSON.stringify(Array.from(selectedIdeas));
+
+  const fd = new FormData();
+  fd.append('indices', indices);
+  fd.append('prompt', prompt);
+  fd.append('source_idea_indices', sourceIdeasJson);
+
+  // Include attachment files if any
+  const revisionFiles = document.getElementById('revisionFiles');
+  if (revisionFiles && revisionFiles.files.length > 0) {
+    for (const file of revisionFiles.files) {
+      fd.append('revision_images', file);
+    }
+  }
+
+  fetch('/revise', {
+    method: 'POST',
+    body: fd,
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+
+    // Register the revision as a new idea so addImageToGrid shows the label
+    const revIdeaIdx = data.revision_idea_idx;
+    if (revIdeaIdx !== undefined) {
+      while (ideas.length <= revIdeaIdx) ideas.push('');
+      ideas[revIdeaIdx] = data.revision_label || ('(Revision) ' + prompt);
+    }
+
+    document.getElementById('gridLabel').textContent = 'Revisions \u2014 Select Your Finals';
+    selected.clear(); updateSelectedUI();
+    // Clear revision attachments
+    if (revisionFiles) revisionFiles.value = '';
+    const previews = document.getElementById('revisionPreviews');
+    if (previews) previews.innerHTML = '';
+    showComputeWindow();
+    startPolling();
+  });
+}
+
+function downloadImage(encodedPath, filename) {
+  fetch('/download?path=' + encodedPath)
+    .then(r => {
+      if (!r.ok) throw new Error('Download failed: ' + r.status);
+      return r.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    })
+    .catch(e => alert('Download error: ' + e.message));
+}
+
+function downloadSelected() {
+  if (selected.size === 0) return;
+  const imgs = allImages.filter(img => selected.has(img.idx));
+  let delay = 0;
+  imgs.forEach(img => {
+    setTimeout(() => downloadImage(encodeURIComponent(img.path), 'thumb_' + img.idx + '.png'), delay);
+    delay += 300;
+  });
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+<div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
+</body>
+</html>

@@ -3,7 +3,7 @@ services:
     name: doom-thumbnails
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python thumbnail_gen.py
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 300 --worker-class gthread --threads 4 "app:create_app()"
     envVars:
       - key: GEMINI_API_KEY
         sync: false
