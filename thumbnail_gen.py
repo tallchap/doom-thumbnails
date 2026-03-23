@@ -676,9 +676,8 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
 
     prompts = []
     for idea_idx, idea_text in enumerate(ideas):
-        # Detect if Liron is mentioned in this idea
-        idea_mentions_liron = "liron" in idea_text.lower()
-        selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL) if idea_mentions_liron else []
+        # Always include Liron refs — he's the host and appears in every thumbnail
+        selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL)
         liron_section = (
             "LIRON SHAPIRA (HOST) — CRITICAL FACE MATCH REQUIREMENT:\n"
             "A targeted subset of Liron Shapira reference photos is attached below. "
@@ -744,6 +743,8 @@ def build_riff_prompts(idea_text, idea_idx, speaker_refs, source_refs, custom_pr
 def build_variation_prompts(selected_images, speaker_refs, count_per=3):
     """Build variation prompts from selected images."""
     selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
+    # Always include Liron refs — he's the host and appears in every thumbnail
+    selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL)
     speaker_section = (
         "SPEAKER LIKENESS (CRITICAL): A targeted subset of speaker photos is attached — the person(s) MUST closely "
         "resemble these photos. Same face, features, skin tone, hair."
@@ -758,6 +759,19 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
                 variation_total=count_per,
             )
             contents = [prompt_text, img]
+            # Liron refs — placed right after base image
+            if selected_liron_refs:
+                contents.append(
+                    "In this image, you must make one of the faces look like Liron Shapira. "
+                    "Liron Shapira looks like the following enclosed images:"
+                )
+                for lf in selected_liron_refs:
+                    contents.append(lf)
+                contents.append(
+                    "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
+                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                    "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
+                )
             brand_sample = _select_brand_refs()
             if brand_sample:
                 contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
@@ -772,8 +786,8 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
 def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None, context_prompt=None):
     """Build revision prompts with custom instructions."""
     prompts = []
-    mentions_liron = "liron" in (custom_prompt or "").lower()
-    selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL) if mentions_liron else []
+    # Always include Liron refs — he's the host and appears in every thumbnail
+    selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL)
     liron_instruction = (
         "Note: this image includes Liron Shapira. His face MUST faithfully match the attached Liron reference photos "
         "(same facial structure, eyes, nose, beard shape, skin tone). Do NOT generate a generic person or alter identity."
