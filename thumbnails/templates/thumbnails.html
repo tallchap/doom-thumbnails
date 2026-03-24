@@ -441,6 +441,11 @@
 <div class="cost-display" id="sessionCostDisplay">Session cost: <strong>$0.00</strong></div>
 
 <script>
+// ----- Session ID (per-tab, survives same-tab refresh) -----
+const SESSION_ID = sessionStorage.getItem('thumbSessionId') || crypto.randomUUID();
+sessionStorage.setItem('thumbSessionId', SESSION_ID);
+console.log('[THUMB] session_id=' + SESSION_ID);
+
 // ----- State -----
 let ideas = [];
 let sourceImages = [];  // {url, thumbnail, title, selected, bytes_uploaded}
@@ -474,7 +479,7 @@ async function openLastApiCallWindow() {
   }
   w.document.write('<!doctype html><html><head><title>Last API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Last API call payload (complete)</div><pre>Loading…</pre></body></html>');
   try {
-    const r = await fetch('/last_api_call');
+    const r = await fetch('/last_api_call?session_id=' + SESSION_ID);
     const data = await r.json();
     const text = (data && data.text) ? data.text : 'No API call recorded yet.';
     w.document.querySelector('pre').textContent = text;
@@ -487,7 +492,7 @@ async function openLastApiCallWindow() {
 updateCostDisplay(clientSessionCost);
 
 // Fetch current status on page load to sync cost & enable riff buttons if idle
-fetch('/status').then(r => r.json()).then(data => {
+fetch('/status?session_id=' + SESSION_ID).then(r => r.json()).then(data => {
   // Sync server cost into client tracking
   if (data.session_cost > 0) {
     lastServerCost = data.session_cost;
@@ -571,6 +576,7 @@ async function gatherSourceImages() {
     const fd = new FormData();
     fd.append('title', title);
     fd.append('custom_prompt', document.getElementById('customPrompt').value);
+    fd.append('session_id', SESSION_ID);
 
     const resp = await fetch('/gather_images', { method: 'POST', body: fd });
     const data = await resp.json();
@@ -648,6 +654,7 @@ async function proceedToIdeas() {
     fd.append('custom_prompt', document.getElementById('customPrompt').value);
     fd.append('transcript', transcript.slice(0, 5000));
     fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
+    fd.append('session_id', SESSION_ID);
 
     const resp = await fetch('/generate_ideas', { method: 'POST', body: fd });
     const data = await resp.json();
@@ -664,6 +671,7 @@ async function proceedToIdeas() {
 
 async function generateMoreIdeas() {
   flushActiveEdits();
+  console.log('[THUMB] generateMoreIdeas | existing=' + ideas.length);
   const title = document.getElementById('episodeTitle').value.trim();
   if (!title) { alert('Please enter an episode title.'); return; }
 
@@ -677,6 +685,7 @@ async function generateMoreIdeas() {
     fd.append('transcript', transcript.slice(0, 5000));
     fd.append('additional_instructions', document.getElementById('additionalInstructions').value);
     fd.append('existing_ideas', JSON.stringify(ideas));
+    fd.append('session_id', SESSION_ID);
 
     const resp = await fetch('/more_ideas', { method: 'POST', body: fd });
     const data = await resp.json();
@@ -722,6 +731,7 @@ function finishEditIdea(idx) {
 }
 
 function deleteIdea(idx) {
+  console.log('[THUMB] deleteIdea | idx=' + idx + ' | remaining=' + (ideas.length - 1));
   ideas.splice(idx, 1);
   renderIdeas();
 }
@@ -756,6 +766,9 @@ function setRiffButtonsDisabled(disabled) {
 async function generateThumbnails() {
   flushActiveEdits();
   if (ideas.length === 0) { alert('No ideas to generate thumbnails for.'); return; }
+  const _speakerCount = document.getElementById('speakerFiles').files.length;
+  const _sourceCount = document.getElementById('sourceFiles').files.length;
+  console.log('[THUMB] generateThumbnails | ideas=' + ideas.length + ' | speakers=' + _speakerCount + ' | sources=' + _sourceCount + ' | allImages=' + allImages.length);
 
   const btn = document.getElementById('genThumbsBtn');
   btn.disabled = true;
@@ -781,6 +794,7 @@ async function generateThumbnails() {
   // Attach web-gathered source images (send URLs for server to download)
   const selectedSources = sourceImages.filter(s => !s.removed).map(s => s.url).filter(Boolean);
   fd.append('source_urls', JSON.stringify(selectedSources));
+  fd.append('session_id', SESSION_ID);
 
   try {
     const resp = await fetch('/generate_from_ideas', { method: 'POST', body: fd, credentials: 'same-origin' });
@@ -793,9 +807,9 @@ async function generateThumbnails() {
     updateSelectedUI();
 
     // Sync cost baseline — take current value so deltas apply correctly
-    fetch('/status').then(r => r.json()).then(d => {
+    fetch('/status?session_id=' + SESSION_ID).then(r => r.json()).then(d => {
       if (d.session_cost > lastServerCost) lastServerCost = d.session_cost;
-    }).catch(() => {});
+    }).catch(err => { console.error('[THUMB] cost sync error:', err); });
 
     document.getElementById('gridCard').classList.remove('hidden');
     showComputeWindow();
@@ -848,6 +862,7 @@ async function executeRiff(ideaIdx) {
   fd.append('additional_instructions', (document.getElementById('additionalInstructions') || {}).value || '');
   fd.append('riff_prompt', riffPrompt);
   fd.append('riff_count', riffCount);
+  fd.append('session_id', SESSION_ID);
 
   // Do NOT resend speakers/sources/source_urls — server reuses stored refs from initial generation.
   // Only send riff-specific images if the user added them.
@@ -881,9 +896,9 @@ async function executeRiff(ideaIdx) {
     if (panel) panel.style.display = 'none';
 
     // Sync cost baseline — take current value so deltas apply correctly
-    fetch('/status').then(r => r.json()).then(d => {
+    fetch('/status?session_id=' + SESSION_ID).then(r => r.json()).then(d => {
       if (d.session_cost > lastServerCost) lastServerCost = d.session_cost;
-    }).catch(() => {});
+    }).catch(err => { console.error('[THUMB] cost sync error:', err); });
 
     document.getElementById('gridCard').classList.remove('hidden');
     showComputeWindow();
@@ -922,7 +937,7 @@ function startPolling() {
 }
 
 function pollStatus() {
-  fetch('/status').then(r => r.json()).then(data => {
+  fetch('/status?session_id=' + SESSION_ID).then(r => r.json()).then(data => {
     const doneCount = data.completed + data.errors;
     const pct = data.total > 0 ? (doneCount / data.total * 100) : 0;
 
@@ -999,11 +1014,14 @@ function pollStatus() {
         document.getElementById('computeToggleBtn').innerHTML = '&#9660;';
       }, 3000);
     }
-  }).catch(() => {});
+  }).catch(err => { console.error('[THUMB] pollStatus error:', err); });
 }
 
 function addImageToGrid(img) {
   const ideaIdx = img.idea_idx;
+  if (ideaIdx >= 0 && ideaIdx >= ideas.length) {
+    console.warn('[THUMB] addImageToGrid | stale idea_idx=' + ideaIdx + ' >= ideas.length=' + ideas.length + ' | img.idx=' + img.idx);
+  }
   const container = document.getElementById('ideaGroupsContainer');
 
   // Find or create idea group
@@ -1073,6 +1091,7 @@ function startRevision() {
   fd.append('indices', indices);
   fd.append('prompt', prompt);
   fd.append('source_idea_indices', sourceIdeasJson);
+  fd.append('session_id', SESSION_ID);
 
   // Include attachment files if any
   const revisionFiles = document.getElementById('revisionFiles');

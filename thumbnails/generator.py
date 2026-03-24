@@ -394,6 +394,9 @@ def run_generation(client, prompts, output_dir, phase="round1", target_status=No
     """Run async generation in a background thread."""
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
+    images_cleared = phase == "round1"
+    print(f"[THUMB] run_generation | phase={phase} | prompts={len(prompts)} | images_cleared={images_cleared} | existing_images={len(_st.get('images', []))} | existing_ideas={len(_st.get('ideas', []))}")
+
     with _lk:
         _st["running"] = True
         _st["cancel_requested"] = False

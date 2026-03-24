@@ -16,7 +16,7 @@ from config import (
 )
 from shared.gemini_client import get_client, upload_files_from_bytes, BRAND_FILES, BORDER_REF_FILES
 from shared.helpers import parse_form_or_multipart
-from shared.state import main_status, main_status_lock, revision_status, revision_status_lock
+from shared.state import revision_status, revision_status_lock, get_session
 from thumbnails.brave_search import search_images_brave, download_image_bytes
 from thumbnails.generator import (
     generate_ideas, generate_search_queries,
@@ -26,6 +26,12 @@ from thumbnails.generator import (
 from thumbnails.prompts import BORDER_PASS_PROMPT, REVISION_PROMPT, REVISION_CONTEXT_PROMPT
 
 thumbnails_bp = Blueprint("thumbnails", __name__, template_folder="templates")
+
+
+def _get_session():
+    """Extract session_id from request and return (status_dict, lock)."""
+    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    return get_session(session_id)
 
 
 @thumbnails_bp.route("/")
@@ -41,7 +47,10 @@ def index():
 @require_auth
 def get_status():
     params = request.args
-    _st, _lk = (revision_status, revision_status_lock) if params.get("page") == "revision" else (main_status, main_status_lock)
+    if params.get("page") == "revision":
+        _st, _lk = revision_status, revision_status_lock
+    else:
+        _st, _lk = _get_session()
     try:
         with _lk:
             safe = {
@@ -84,7 +93,10 @@ def get_status():
 @thumbnails_bp.route("/last_api_call")
 @require_auth
 def last_api_call():
-    _st, _lk = (revision_status, revision_status_lock) if request.args.get("page") == "revision" else (main_status, main_status_lock)
+    if request.args.get("page") == "revision":
+        _st, _lk = revision_status, revision_status_lock
+    else:
+        _st, _lk = _get_session()
     with _lk:
         payload = _st.get("last_api_call", "")
     return jsonify({"ok": True, "text": payload})
@@ -93,7 +105,10 @@ def last_api_call():
 @thumbnails_bp.route("/last_border_api_call")
 @require_auth
 def last_border_api_call():
-    _st, _lk = (revision_status, revision_status_lock) if request.args.get("page") == "revision" else (main_status, main_status_lock)
+    if request.args.get("page") == "revision":
+        _st, _lk = revision_status, revision_status_lock
+    else:
+        _st, _lk = _get_session()
     with _lk:
         payload = _st.get("last_border_api_call", "")
     return jsonify({"ok": True, "text": payload})
@@ -182,7 +197,9 @@ def generate_ideas_route():
     try:
         client = get_client()
         ideas_list = generate_ideas(client, title, custom_prompt, transcript_text, additional)
-        main_status["ideas"] = ideas_list
+        _st, _lk = _get_session()
+        with _lk:
+            _st["ideas"] = ideas_list
         return jsonify({"ok": True, "ideas": ideas_list})
     except Exception as e:
         return jsonify({"error": f"Idea generation failed: {str(e)[:200]}"})
@@ -223,10 +240,11 @@ def more_ideas():
 @thumbnails_bp.route("/generate_from_ideas", methods=["POST"])
 @require_auth
 def generate_from_ideas():
-    with main_status_lock:
-        is_running = main_status["running"]
+    _st, _lk = _get_session()
+    with _lk:
+        is_running = _st["running"]
     if is_running:
-        return jsonify({"error": "Generation already in progress"})
+        return jsonify({"error": "Generation already in progress for this session"})
 
     fields, files = parse_form_or_multipart(request)
     title = fields.get("title", "").strip()
@@ -245,6 +263,16 @@ def generate_from_ideas():
     client = get_client()
     speaker_refs = upload_files_from_bytes(client, files.get("speakers", []), "speaker")
     source_refs = upload_files_from_bytes(client, files.get("sources", []), "source")
+
+    # Persist speaker/source refs across re-runs: reuse previous if none uploaded
+    if speaker_refs:
+        print(f"[THUMB] generate_from_ideas | new speaker_refs={len(speaker_refs)}")
+    else:
+        speaker_refs = _st.get("speakers", [])
+        print(f"[THUMB] generate_from_ideas | reusing stored speaker_refs={len(speaker_refs)}")
+    if not source_refs:
+        source_refs = list(_st.get("sources", []))
+        print(f"[THUMB] generate_from_ideas | reusing stored source_refs={len(source_refs)}")
 
     source_urls_json = fields.get("source_urls", "[]")
     try:
@@ -277,13 +305,16 @@ def generate_from_ideas():
     prompts = build_idea_prompts(ideas_list, speaker_refs, source_refs, custom_prompt, additional, variations_per=3)
     save_metadata(round_dir, info_dict, len(prompts), "round1")
 
-    main_status["episode_dir"] = episode_dir
-    main_status["speakers"] = speaker_refs
-    main_status["sources"] = source_refs
-    main_status["ideas"] = ideas_list
-    main_status["round_num"] = 1
-    main_status["add_border"] = fields.get("add_border") == "1"
-    run_generation(client, prompts, round_dir, "round1", target_status=main_status, target_lock=main_status_lock)
+    _st["episode_dir"] = episode_dir
+    _st["speakers"] = speaker_refs
+    _st["sources"] = source_refs
+    _st["ideas"] = ideas_list
+    _st["round_num"] = 1
+    _st["add_border"] = fields.get("add_border") == "1"
+
+    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    print(f"[THUMB] generate_from_ideas | session={session_id} | ideas={len(ideas_list)} | speakers={len(speaker_refs)} | sources={len(source_refs)} | prompts={len(prompts)} | dir={round_dir}")
+    run_generation(client, prompts, round_dir, "round1", target_status=_st, target_lock=_lk)
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
@@ -291,10 +322,11 @@ def generate_from_ideas():
 @thumbnails_bp.route("/riff_idea", methods=["POST"])
 @require_auth
 def riff_idea():
-    with main_status_lock:
-        is_running = main_status["running"]
+    _st, _lk = _get_session()
+    with _lk:
+        is_running = _st["running"]
     if is_running:
-        return jsonify({"error": "Generation already in progress"})
+        return jsonify({"error": "Generation already in progress for this session"})
 
     fields, files = parse_form_or_multipart(request)
     idea_text = fields.get("idea_text", "").strip()
@@ -310,27 +342,30 @@ def riff_idea():
         additional = (additional + "\n\nRIFF INSTRUCTIONS: " + riff_prompt) if additional else "RIFF INSTRUCTIONS: " + riff_prompt
 
     client = get_client()
-    speaker_refs = main_status.get("speakers", [])
-    source_refs = list(main_status.get("sources", []))
+    speaker_refs = _st.get("speakers", [])
+    source_refs = list(_st.get("sources", []))
     riff_image_refs = upload_files_from_bytes(client, files.get("riff_images", []), "riff_img")
     source_refs.extend(riff_image_refs)
 
-    episode_dir = main_status.get("episode_dir", "")
+    episode_dir = _st.get("episode_dir", "")
     if not episode_dir:
         episode_dir = os.path.join(THUMBNAILS_DIR, f"riff-{datetime.date.today().isoformat()}")
 
-    with main_status_lock:
-        main_status["round_num"] = main_status.get("round_num", 1) + 1
-        round_num = main_status["round_num"]
-        existing_max = max((img["idea_idx"] for img in main_status["images"]), default=-1)
-        ideas_max = len(main_status.get("ideas", [])) - 1
+    with _lk:
+        _st["round_num"] = _st.get("round_num", 1) + 1
+        round_num = _st["round_num"]
+        existing_max = max((img["idea_idx"] for img in _st["images"]), default=-1)
+        ideas_max = len(_st.get("ideas", [])) - 1
         riff_idea_idx = max(existing_max, ideas_max) + 1
         riff_label = f"(Riff on Idea {idea_idx + 1}) {idea_text}"
-        ideas_list = main_status.get("ideas", [])
+        ideas_list = _st.get("ideas", [])
         while len(ideas_list) <= riff_idea_idx:
             ideas_list.append("")
         ideas_list[riff_idea_idx] = riff_label
-        main_status["ideas"] = ideas_list
+        _st["ideas"] = ideas_list
+
+    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    print(f"[THUMB] riff_idea | session={session_id} | idea_idx={idea_idx} | riff_idea_idx={riff_idea_idx} | ideas_len={len(_st.get('ideas', []))} | images_len={len(_st.get('images', []))} | text={idea_text[:60]}")
 
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
@@ -343,8 +378,8 @@ def riff_idea():
     prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=riff_count)
     prompts = [(riff_idea_idx, var, contents) for (_, var, contents) in prompts_raw]
 
-    main_status["add_border"] = fields.get("add_border") == "1"
-    run_generation(client, prompts, round_dir, "riff", target_status=main_status, target_lock=main_status_lock)
+    _st["add_border"] = fields.get("add_border") == "1"
+    run_generation(client, prompts, round_dir, "riff", target_status=_st, target_lock=_lk)
     return jsonify({
         "ok": True, "output_dir": round_dir, "count": len(prompts),
         "riff_idea_idx": riff_idea_idx, "riff_label": idea_text,
@@ -354,10 +389,11 @@ def riff_idea():
 @thumbnails_bp.route("/revise", methods=["POST"])
 @require_auth
 def revise_post():
-    with main_status_lock:
-        is_running = main_status["running"]
+    _st, _lk = _get_session()
+    with _lk:
+        is_running = _st["running"]
     if is_running:
-        return jsonify({"error": "Generation already in progress"})
+        return jsonify({"error": "Generation already in progress for this session"})
 
     fields, files = parse_form_or_multipart(request)
     indices_raw = fields.get("indices", "")
@@ -372,29 +408,29 @@ def revise_post():
 
     selected_images = []
     source_idea_idxs = set()
-    for img_info in main_status["images"]:
+    for img_info in _st["images"]:
         if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
             selected_images.append(Image.open(img_info["path"]))
             if img_info.get("idea_idx", -1) >= 0:
                 source_idea_idxs.add(img_info["idea_idx"])
 
     if not selected_images:
-        if not main_status["images"]:
+        if not _st["images"]:
             return jsonify({"error": "No thumbnails in server memory. The server was likely restarted — please regenerate thumbnails first."})
         else:
-            return jsonify({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(main_status['images'])) + " known images). Try regenerating."})
+            return jsonify({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(_st['images'])) + " known images). Try regenerating."})
 
     client = get_client()
     attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
-    speakers = main_status.get("speakers", [])
-    episode_dir = main_status.get("episode_dir", "")
+    speakers = _st.get("speakers", [])
+    episode_dir = _st.get("episode_dir", "")
 
     try:
         src_indices = json.loads(source_idea_indices_json)
     except (json.JSONDecodeError, ValueError):
         src_indices = list(source_idea_idxs)
 
-    ideas_list = main_status.get("ideas", [])
+    ideas_list = _st.get("ideas", [])
     source_parts = []
     for si in src_indices:
         si = int(si)
@@ -409,16 +445,19 @@ def revise_post():
     else:
         revision_label = f"(Revision) {prompt_summary}"
 
-    with main_status_lock:
-        main_status["round_num"] = main_status.get("round_num", 1) + 1
-        round_num = main_status["round_num"]
-        existing_max = max((img["idea_idx"] for img in main_status["images"]), default=-1)
-        ideas_max = len(main_status.get("ideas", [])) - 1
+    with _lk:
+        _st["round_num"] = _st.get("round_num", 1) + 1
+        round_num = _st["round_num"]
+        existing_max = max((img["idea_idx"] for img in _st["images"]), default=-1)
+        ideas_max = len(_st.get("ideas", [])) - 1
         revision_idea_idx = max(existing_max, ideas_max) + 1
         while len(ideas_list) <= revision_idea_idx:
             ideas_list.append("")
         ideas_list[revision_idea_idx] = revision_label
-        main_status["ideas"] = ideas_list
+        _st["ideas"] = ideas_list
+
+    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    print(f"[THUMB] revise_post | session={session_id} | indices={indices} | revision_idea_idx={revision_idea_idx} | ideas_len={len(ideas_list)} | images_len={len(_st.get('images', []))}")
 
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
@@ -429,8 +468,8 @@ def revise_post():
         attachment_refs=attachment_refs if attachment_refs else None,
     )
 
-    main_status["add_border"] = fields.get("add_border") == "1"
-    run_generation(client, prompts, round_dir, "revision", target_status=main_status, target_lock=main_status_lock)
+    _st["add_border"] = fields.get("add_border") == "1"
+    run_generation(client, prompts, round_dir, "revision", target_status=_st, target_lock=_lk)
 
     return jsonify({
         "ok": True, "output_dir": round_dir, "count": len(prompts),
@@ -441,10 +480,11 @@ def revise_post():
 @thumbnails_bp.route("/vary")
 @require_auth
 def vary():
-    with main_status_lock:
-        is_running = main_status["running"]
+    _st, _lk = _get_session()
+    with _lk:
+        is_running = _st["running"]
     if is_running:
-        return jsonify({"error": "Generation already in progress"})
+        return jsonify({"error": "Generation already in progress for this session"})
 
     indices_raw = request.args.get("indices", "")
     indices = [int(x) for x in indices_raw.split(",") if x.strip().isdigit()]
@@ -452,27 +492,27 @@ def vary():
         return jsonify({"error": "No images selected"})
 
     selected_images = []
-    for img_info in main_status["images"]:
+    for img_info in _st["images"]:
         if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
             selected_images.append(Image.open(img_info["path"]))
 
     if not selected_images:
-        if not main_status["images"]:
+        if not _st["images"]:
             return jsonify({"error": "No thumbnails in server memory. The server was likely restarted — please regenerate thumbnails first."})
         else:
-            return jsonify({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(main_status['images'])) + " known images). Try regenerating."})
+            return jsonify({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(_st['images'])) + " known images). Try regenerating."})
 
-    speakers = main_status.get("speakers", [])
-    episode_dir = main_status.get("episode_dir", "")
-    with main_status_lock:
-        main_status["round_num"] = main_status.get("round_num", 1) + 1
-        round_num = main_status["round_num"]
+    speakers = _st.get("speakers", [])
+    episode_dir = _st.get("episode_dir", "")
+    with _lk:
+        _st["round_num"] = _st.get("round_num", 1) + 1
+        round_num = _st["round_num"]
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
 
     prompts = build_variation_prompts(selected_images, speakers, count_per=3)
     client = get_client()
-    run_generation(client, prompts, round_dir, "variation", target_status=main_status, target_lock=main_status_lock)
+    run_generation(client, prompts, round_dir, "variation", target_status=_st, target_lock=_lk)
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
@@ -480,12 +520,13 @@ def vary():
 @thumbnails_bp.route("/save_finals")
 @require_auth
 def save_finals():
+    _st, _lk = _get_session()
     indices_raw = request.args.get("indices", "")
     indices = [int(x) for x in indices_raw.split(",") if x.strip().isdigit()]
     if not indices:
         return jsonify({"error": "No images selected"})
 
-    episode_dir = main_status.get("episode_dir", "")
+    episode_dir = _st.get("episode_dir", "")
     if not episode_dir:
         return jsonify({"error": "No episode directory found"})
 
@@ -493,7 +534,7 @@ def save_finals():
     os.makedirs(finals_dir, exist_ok=True)
 
     count = 0
-    for img_info in main_status["images"]:
+    for img_info in _st["images"]:
         if img_info["idx"] in indices and os.path.isfile(img_info["path"]):
             count += 1
             dest = os.path.join(finals_dir, f"final_{count}.png")
@@ -505,9 +546,10 @@ def save_finals():
 @thumbnails_bp.route("/open_folder")
 @require_auth
 def open_folder():
+    _st, _lk = _get_session()
     if os.environ.get("NO_BROWSER") == "1":
         return jsonify({"ok": True, "note": "Folder open disabled on server"})
-    episode_dir = main_status.get("episode_dir", THUMBNAILS_DIR)
+    episode_dir = _st.get("episode_dir", THUMBNAILS_DIR)
     if os.path.isdir(episode_dir):
         subprocess.Popen(["open", episode_dir])
     return jsonify({"ok": True})
@@ -517,11 +559,16 @@ def open_folder():
 @require_auth
 def cancel():
     params = request.args
-    _st, _lk = (revision_status, revision_status_lock) if params.get("page") == "revision" else (main_status, main_status_lock)
+    if params.get("page") == "revision":
+        _st, _lk = revision_status, revision_status_lock
+    else:
+        _st, _lk = _get_session()
+    session_id = params.get("session_id", "default")
     with _lk:
         if _st.get("running"):
             _st["cancel_requested"] = True
             _st["log"].append("Cancel requested — waiting for in-flight API calls to finish...")
+            print(f"[THUMB] cancel | session={session_id}")
             return jsonify({"ok": True, "message": "Cancel requested"})
         else:
             return jsonify({"ok": True, "message": "Nothing running"})
