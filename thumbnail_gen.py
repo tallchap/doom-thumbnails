@@ -89,16 +89,63 @@ COST_PER_IMAGE = 0.045  # $0.045 per 512px image
 
 BRAND_GUIDE = """BRAND — "DOOM DEBATES":
 YouTube channel by Liron Shapira about AI existential risk.
-Study the attached brand reference thumbnails for VISUAL STYLE ONLY — colors, composition, typography, energy.
-CRITICAL: The brand thumbnails contain images of people — COMPLETELY IGNORE all human faces in the brand references. Do NOT reproduce, copy, or be inspired by ANY faces from the brand references. Use ONLY the colors, layout, typography, and visual energy. The ONLY faces allowed in your output are from separately labeled speaker/host photo sections.
+
 Key brand traits:
 - Red-toned background gradient or texture as the base
-- Large bold headline text in white or yellow, dramatic and punchy
+- Large bold headline text in white or yellow, dramatic and punchy (1-5 words)
 - Guest/host photos with intense, exaggerated expressions (shock, concern, confrontation)
 - Composite imagery — people combined with dramatic AI/apocalyptic visuals
 - Avoid cliché AI iconography: NO microchips/chipsets/circuit-board "AI" icons or chip-with-AI symbols
 - Overall feel: high-stakes, provocative, debate energy
-- Color palette: deep reds, blacks, whites, with yellow accents for emphasis"""
+- Color palette: deep reds, blacks, whites, with yellow accents for emphasis
+
+EXISTING THUMBNAIL EXAMPLES (use these text descriptions as your style reference):
+
+1. "85% P(DOOM)" — Dramatic split-scene. Left: friendly man in tan polo, mid-conversation. Right: newsroom monitor showing nightmarish office with faceless workers (heads replaced by black spheres with dollar signs) engulfed in flames. Huge white block text "85% P(DOOM)".
+
+2. "99.999% P(DOOM)" — Vivid red background with dark jagged band across middle. Left: bold white text "99.999% P(DOOM)". Right: young man with pale skin, dark shoulder-length hair, headset, serious expression.
+
+3. "AI 2027" — Cinematic fork in the road. Left half: highway into hellscape inferno with skull-shaped smoke. Right half: sunlit path through green hills toward gleaming futuristic city. Huge white text "AI 2027" spanning center.
+
+4. "AI DOOM DEBATE" (Hanania) — Face-off scene. Two men in profile shouting at each other. Left: navy blue background with "HANANIA". Right: crimson red background with "SHA...". Giant white text "AI DOOM DEBATE" across top.
+
+5. "AI DOOM DEBATE" (Roon) — Gritty crimson-red texture. Dark red vertical ribbon through center. Left: real man with fair skin, short brown hair, playful half-smile, navy hoodie. Right: cartoon character mirroring him. Stacked white text "AI DOOM DEBATE".
+
+6. "AI DOOM DEBATE" (Critch) — Red and black with stylized flames. Left: man with trimmed beard, gray flat cap, brown leather jacket, contemplative. Right: man with short dark hair, animated expression, mouth open mid-sentence. Bold white "AI DOOM DEBATE".
+
+7. "AI DOOM Q&A" — Man in foreground with glasses and green sweater behind microphone, smiling. Behind him: apocalyptic scene with smoke, burning earth, fiery cracks. Stone tomb with "ILYA" engraved. White text "AI DOOM Q&A".
+
+8. "AI SNAKE OIL" — Left: man with short black hair, dark skin, rectangular glasses, red-and-white checkered shirt. Right: book cover "AI Snake Oil". Deep red background with digital waveform.
+
+9. "AI TWITTER BEEFS #2" — Fiery red with jagged tear shapes. Central black column with white "AI TWITTER BEEFS #2". Six floating headshots arranged as opposing sides.
+
+10. "AI WILL KILL US" — Bold white text on red background.
+
+11. "BAYES VS POPPER" — Red background with black stripe, flames behind text. Three men beneath: left in plaid shirt/gray hoodie, center with black-rimmed glasses, right blonde with headphones. Bold "BAYES VS POPPER".
+
+12. "DOOM TRAIN" — Classic black steam locomotive heading toward towering wall of fire. Bold white "DOOM TRAIN" above. Map pins along the track.
+
+13. "ORGANIC ALIGNMENT" — Bold red background with black stripe. Two men: left bearded with shaved crown, right with dark-rimmed glasses resting chin on hand. Comic-style speech bubble "ORGANIC ALIGNMENT".
+
+14. "FRASER CAIN" — Textured red with jagged black shape. Left: large white "FRASER CAIN". Right: bald man with reddish-brown beard, warm smile, black shirt.
+
+15. "HOW IT ENDS" — Sky-blue background. Giant white "HOW IT ENDS". Four-engine jet spiraling downward with black smoke, "HUMANITY" stamped on fuselage.
+
+16. "Liron vs. Everyone" — Sunny park. Man in glasses mid-side-kick with red "DOOM" t-shirt. Eight men in crouched semicircle with clenched fists. White "Liron vs. Everyone" across top.
+
+17. "MAKE IT LOVE US" — Deep textured red. Left: serious man with shaved head, slate-blue t-shirt, AI logo. Right: man with pepper-gray hair, red-rimmed glasses, broad smile. Stacked white "MAKE IT LOVE US".
+
+18. "NUCLEAR PROLIFERATION" — Large white "NUCLEAR PROLIFERATION" with mushroom cloud glowing orange behind it. Dark red gradient. Right: bald man with alarmed expression, white shirt, dark jacket.
+
+19. "OPTIMISTS VS AI DOOMER" — Red and black with flames. Three men: left blonde with headphones, center with dark hair and glasses in maroon shirt, right in dark green top. Bold "OPTIMISTS VS AI DOOMER".
+
+20. "STOP AI" — Getting arrested for barricading OpenAI's office theme.
+
+21. "THEY CAN'T REASON" — Vibrant textured red. Left: bold white "THEY CAN'T REASON" stacked. Right: cheerful older man with silver-white hair, rimless glasses, bright orange kurta-style shirt.
+
+22. "WE'RE DOOMED / SON OF RICHARD FEYNMAN" — Left: gray-haired bearded man with microphone, speech bubble "WE'RE DOOMED". Right: bold white "SON OF RICHARD FEYNMAN" on red-orange with yellow flame.
+
+23. "What's His P(doom)?" — Red with orange flames. Large white "What's His P(doom)?". Silver-haired man in three-quarter profile. Hand-drawn arrow pointing at him. Yellow text "Economist Scott Sumner"."""
 
 IDEA_GENERATION_PROMPT = """You are a YouTube thumbnail strategist for "Doom Debates", a channel about AI existential risk hosted by Liron Shapira.
 
@@ -167,7 +214,7 @@ THUMBNAIL CONCEPT:
 {custom_prompt_section}
 
 BRAND STYLE:
-Apply the Doom Debates brand style. Use the attached brand reference thumbnails for visual style ONLY (colors, composition, typography, energy). Do NOT copy any faces or people from the brand references.
+Apply the Doom Debates brand style described below. Match the visual style (colors, composition, typography, energy) from the text descriptions of existing thumbnails.
 
 {brand_guide}
 
@@ -181,7 +228,7 @@ RULES:
 - 16:9 aspect ratio, photorealistic, sharp focus
 - Large expressive faces (40-60% of frame)
 - High contrast, clean composition, one focal point
-- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are those whose reference photos are attached separately below. Do NOT generate, copy, or include ANY other human faces. The brand reference thumbnails contain people — IGNORE those people entirely, use ONLY the color/layout/typography style.
+- PEOPLE RULE (CRITICAL): The ONLY human faces/people allowed in this thumbnail are those whose reference photos are attached separately below. Do NOT generate or include ANY other human faces.
 - Remember: ONLY 1-5 words of text total in the entire image. ONE text element only.
 - DO NOT include AI chip/microchip/circuit-board iconography (including a square chip with "AI" text or similar symbols).
 
@@ -199,7 +246,7 @@ REVISION_CONTEXT_PROMPT = """When designing the thumbnail keep this in mind:
 - Do NOT introduce AI chip/microchip/circuit-board iconography (including a square chip with "AI" text).
 - TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in quotes (single or double), preserve that quoted text EXACTLY as written — same words, order, punctuation, apostrophes, and capitalization. Do NOT paraphrase, normalize, or substitute synonyms for quoted text.
 
-Match colors, layout, typography, and energy of the Doom Debates Podcast theme, which are enclosed as separate images, but WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references."""
+Match colors, layout, typography, and energy of the Doom Debates Podcast brand style."""
 
 VARIATION_PROMPT = """Create a variation of the attached YouTube thumbnail for "Doom Debates" podcast.
 Keep the same general composition, mood, and subject, but vary:
@@ -319,7 +366,7 @@ BORDER_PASS_PROMPT = """Take this thumbnail image and add a "Full Episode" borde
 # Keep identity/style references intentionally small and targeted per request.
 MAX_BRAND_REFS_PER_CALL = 3
 MAX_SPEAKER_REFS_PER_CALL = 4
-MAX_LIRON_REFS_PER_CALL = 4
+MAX_LIRON_REFS_PER_CALL = 6
 
 
 def get_client():
@@ -332,30 +379,8 @@ def get_client():
 
 
 def upload_brand_references(client):
-    """Upload all brand thumbnails to Gemini File API on startup."""
-    global BRAND_FILES
-    if not os.path.isdir(EXAMPLES_DIR):
-        print(f"Brand directory not found: {EXAMPLES_DIR}")
-        return
-    files = sorted(
-        f for f in os.listdir(EXAMPLES_DIR)
-        if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
-    )
-    if not files:
-        print("No brand reference images found.")
-        return
-    print(f"Uploading {len(files)} brand references to File API...")
-    for i, f in enumerate(files):
-        filepath = os.path.join(EXAMPLES_DIR, f)
-        try:
-            uploaded = client.files.upload(
-                file=filepath,
-                config=types.UploadFileConfig(display_name=f"brand_doom_debates_{i+1:02d}"),
-            )
-            BRAND_FILES.append(uploaded)
-        except Exception as e:
-            print(f"  Failed to upload {f}: {e}")
-    print(f"Uploaded {len(BRAND_FILES)} brand references.")
+    """Brand reference images replaced by text descriptions in BRAND_GUIDE. No-op."""
+    print("Brand style: using text descriptions (no image uploads).")
 
 
 def upload_liron_references(client):
@@ -647,10 +672,12 @@ def generate_description_gpt(prompt):
 
 
 def _select_identity_refs(refs, max_refs):
-    """Choose a small, deterministic subset of identity refs (avoid random mixing)."""
+    """Choose a random subset of identity refs for variety across generations."""
     if not refs:
         return []
-    return list(refs[:max_refs])
+    if len(refs) <= max_refs:
+        return list(refs)
+    return random.sample(refs, max_refs)
 
 
 def _select_brand_refs():
@@ -705,20 +732,18 @@ def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, addition
             if selected_liron_refs:
                 contents.append(
                     "In this image, you must make one of the faces look like Liron Shapira. "
-                    "Liron Shapira looks like the following enclosed images:"
+                    "Liron Shapira is a man in his mid-30s with: short dark brown hair, rectangular dark-framed glasses, "
+                    "light/fair skin, clean-shaven or light stubble, oval face shape. Glasses are his most recognizable feature. "
+                    "He typically wears collared button-down shirts. "
+                    "Reference photos of Liron are enclosed below — copy his EXACT likeness:"
                 )
                 for lf in selected_liron_refs:
                     contents.append(lf)
                 contents.append(
                     "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
-                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                    "same facial structure, same nose, same eyes, same glasses, same skin tone. "
                     "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
                 )
-
-            brand_sample = _select_brand_refs()
-            if brand_sample:
-                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
-                contents.extend(brand_sample)
 
             if selected_speaker_refs:
                 contents.append("=== SPEAKER PHOTOS — targeted subset; the thumbnail MUST use these people's real faces ===")
@@ -763,19 +788,17 @@ def build_variation_prompts(selected_images, speaker_refs, count_per=3):
             if selected_liron_refs:
                 contents.append(
                     "In this image, you must make one of the faces look like Liron Shapira. "
-                    "Liron Shapira looks like the following enclosed images:"
+                    "Liron Shapira is a man in his mid-30s with: short dark brown hair, rectangular dark-framed glasses, "
+                    "light/fair skin, clean-shaven or light stubble, oval face shape. Glasses are his most recognizable feature. "
+                    "Reference photos of Liron are enclosed below — copy his EXACT likeness:"
                 )
                 for lf in selected_liron_refs:
                     contents.append(lf)
                 contents.append(
                     "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
-                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                    "same facial structure, same nose, same eyes, same glasses, same skin tone. "
                     "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
                 )
-            brand_sample = _select_brand_refs()
-            if brand_sample:
-                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
-                contents.extend(brand_sample)
             if selected_speaker_refs:
                 contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
                 contents.extend(selected_speaker_refs)
@@ -807,18 +830,17 @@ def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_p
             if selected_liron_refs:
                 contents.append(
                     "In this image, you must make one of the faces look like Liron Shapira. "
-                    "Liron Shapira looks like the following enclosed images:"
+                    "Liron Shapira is a man in his mid-30s with: short dark brown hair, rectangular dark-framed glasses, "
+                    "light/fair skin, clean-shaven or light stubble, oval face shape. Glasses are his most recognizable feature. "
+                    "Reference photos of Liron are enclosed below — copy his EXACT likeness:"
                 )
                 contents.extend(selected_liron_refs)
                 contents.append(
                     "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
-                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                    "same facial structure, same nose, same eyes, same glasses, same skin tone. "
                     "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
                 )
             contents.append(context_prompt or REVISION_CONTEXT_PROMPT)
-            brand_sample = _select_brand_refs()
-            if brand_sample:
-                contents.extend(brand_sample)
             if attachment_refs:
                 contents.append("The user has attached the following reference image(s) — use them to guide the revision:")
                 contents.extend(attachment_refs)
