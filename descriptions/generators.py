@@ -1,8 +1,11 @@
 """Multi-model YouTube description generation (Gemini, Claude, GPT)."""
 
 import json
+import sys
 import time
 import requests
+
+print(f"[LOAD] descriptions/generators.py loaded from {__file__}", file=sys.stderr, flush=True)
 
 from config import (
     DESCRIPTION_MODEL, ANTHROPIC_API_KEY, CLAUDE_DESCRIPTION_MODEL,
@@ -116,6 +119,10 @@ def _extract_gpt_text(data):
 def generate_description_gpt(prompt):
     if not OPENAI_API_KEY:
         return "[GPT unavailable: OPENAI_API_KEY not set]"
+    # CANARY: if this string appears in output, our code is running
+    import os
+    if os.environ.get("GPT_CANARY_TEST") == "1":
+        return "[GPT CANARY OK — generators.py v2 is loaded]"
     _record_api_call(GPT_DESCRIPTION_MODEL, prompt, phase="description_generation_gpt")
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
