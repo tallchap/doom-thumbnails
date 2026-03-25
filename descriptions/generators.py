@@ -1,11 +1,8 @@
 """Multi-model YouTube description generation (Gemini, Claude, GPT)."""
 
 import json
-import sys
 import time
 import requests
-
-print(f"[LOAD] descriptions/generators.py loaded from {__file__}", file=sys.stderr, flush=True)
 
 from config import (
     DESCRIPTION_MODEL, ANTHROPIC_API_KEY, CLAUDE_DESCRIPTION_MODEL,
@@ -102,16 +99,29 @@ def generate_description_claude(prompt):
 def _extract_gpt_text(data):
     """Extract text from an OpenAI Responses API result.
 
-    Checks output_text (sync responses) then falls back to
-    output[].content[].text (background responses).
+    Tries multiple paths since the response structure varies between
+    sync, background, and polled responses.
     """
-    text = data.get("output_text") or ""
-    if text:
+    # Path 1: top-level output_text (populated for sync responses)
+    text = data.get("output_text")
+    if text and isinstance(text, str) and text.strip():
         return text.strip()
-    for item in data.get("output", []):
+    # Path 2: output[].content[].text (background/polled responses)
+    for item in (data.get("output") or []):
+        if not isinstance(item, dict):
+            continue
         if item.get("type") == "message":
-            for part in item.get("content", []):
-                if part.get("type") == "output_text" and part.get("text"):
+            for part in (item.get("content") or []):
+                if not isinstance(part, dict):
+                    continue
+                t = part.get("text")
+                if t and isinstance(t, str) and t.strip():
+                    return t.strip()
+    # Path 3: search any output item for text (fallback)
+    for item in (data.get("output") or []):
+        if isinstance(item, dict) and item.get("content"):
+            for part in item["content"]:
+                if isinstance(part, dict) and part.get("text", "").strip():
                     return part["text"].strip()
     return ""
 
@@ -119,56 +129,47 @@ def _extract_gpt_text(data):
 def generate_description_gpt(prompt):
     if not OPENAI_API_KEY:
         return "[GPT unavailable: OPENAI_API_KEY not set]"
-    # CANARY: if this string appears in output, our code is running
-    import os
-    if os.environ.get("GPT_CANARY_TEST") == "1":
-        return "[GPT CANARY OK — generators.py v2 is loaded]"
     _record_api_call(GPT_DESCRIPTION_MODEL, prompt, phase="description_generation_gpt")
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
-    body = {
-        "model": GPT_DESCRIPTION_MODEL,
-        "input": prompt,
-        "background": True,
-    }
-    # Create a background response (returns immediately with an ID)
-    try:
-        resp = requests.post(
-            "https://api.openai.com/v1/responses",
-            headers=headers,
-            json=body,
-            timeout=(15, 30),
-        )
-    except requests.exceptions.ReadTimeout:
-        return "[GPT error] Background POST timed out at (15,30) — this should not happen with background=True"
-    except requests.exceptions.ConnectTimeout:
-        return "[GPT error] Could not connect to api.openai.com within 15s"
+    # Create a background response (returns immediately with an ID for polling)
+    resp = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers=headers,
+        json={
+            "model": GPT_DESCRIPTION_MODEL,
+            "input": prompt,
+            "background": True,
+        },
+        timeout=60,
+    )
     resp.raise_for_status()
     data = resp.json()
     resp_status = data.get("status", "unknown")
-    resp_id = data.get("id", "none")
-    # If it completed immediately, return the text
+    resp_id = data.get("id")
+    # If it completed immediately (sync fallback), return the text
     if resp_status == "completed":
         text = _extract_gpt_text(data)
-        return text if text else json.dumps(data)[:4000]
+        if text:
+            return text
+        return f"[GPT completed but no text found] {json.dumps(data)[:2000]}"
     # Poll until completed
-    if not resp_id or resp_id == "none":
-        return json.dumps(data)[:4000]
+    if not resp_id:
+        return f"[GPT no response ID] {json.dumps(data)[:2000]}"
     poll_url = f"https://api.openai.com/v1/responses/{resp_id}"
-    poll_count = 0
     while True:
         time.sleep(10)
-        poll_count += 1
         poll_resp = requests.get(poll_url, headers=headers, timeout=30)
         poll_resp.raise_for_status()
         poll_data = poll_resp.json()
         poll_status = poll_data.get("status", "")
-        print(f"[GPT] Poll #{poll_count} status={poll_status}", file=sys.stderr, flush=True)
         if poll_status == "completed":
             text = _extract_gpt_text(poll_data)
-            return text if text else json.dumps(poll_data)[:4000]
+            if text:
+                return text
+            return f"[GPT completed but no text found] {json.dumps(poll_data)[:2000]}"
         elif poll_status in ("failed", "cancelled", "incomplete"):
             error = poll_data.get("error", {})
             return f"[GPT {poll_status}] {json.dumps(error)[:300]}"

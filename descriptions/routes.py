@@ -58,11 +58,6 @@ def generate_descriptions():
             status["done"] = False
             status["log"].append("Starting multi-model description generation (Gemini + Claude + GPT)")
 
-        import descriptions.generators as _dg
-        import sys
-        print(f"[DIAG] generators module file: {_dg.__file__}", file=sys.stderr, flush=True)
-        print(f"[DIAG] generate_description_gpt source: {getattr(generate_description_gpt, '__module__', 'unknown')}", file=sys.stderr, flush=True)
-
         providers = [
             ("Gemini", lambda: generate_description_gemini(client, prompt)),
             ("Claude", lambda: generate_description_claude(prompt)),
@@ -75,7 +70,7 @@ def generate_descriptions():
             try:
                 output = fn()
             except Exception as e:
-                output = f"[{name} error v2] {str(e)[:260]}"
+                output = f"[{name} error] {str(e)[:260]}"
             out_chars = len(output or "")
             with status_lock:
                 status["desc_calls"] = status.get("desc_calls", 0) + 1
