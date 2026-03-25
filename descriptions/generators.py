@@ -121,34 +121,42 @@ def generate_description_gpt(prompt):
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+    body = {
+        "model": GPT_DESCRIPTION_MODEL,
+        "input": prompt,
+        "background": True,
+    }
+    import sys
+    print(f"[GPT] POST /v1/responses background=True timeout=60", file=sys.stderr, flush=True)
     # Create a background response (returns immediately with an ID)
     resp = requests.post(
         "https://api.openai.com/v1/responses",
         headers=headers,
-        json={
-            "model": GPT_DESCRIPTION_MODEL,
-            "input": prompt,
-            "background": True,
-        },
+        json=body,
         timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
+    resp_status = data.get("status", "unknown")
+    resp_id = data.get("id", "none")
+    print(f"[GPT] Response id={resp_id} status={resp_status}", file=sys.stderr, flush=True)
     # If it completed immediately, return the text
-    if data.get("status") == "completed":
+    if resp_status == "completed":
         text = _extract_gpt_text(data)
         return text if text else json.dumps(data)[:4000]
     # Poll until completed
-    response_id = data.get("id")
-    if not response_id:
+    if not resp_id or resp_id == "none":
         return json.dumps(data)[:4000]
-    poll_url = f"https://api.openai.com/v1/responses/{response_id}"
+    poll_url = f"https://api.openai.com/v1/responses/{resp_id}"
+    poll_count = 0
     while True:
         time.sleep(10)
+        poll_count += 1
         poll_resp = requests.get(poll_url, headers=headers, timeout=30)
         poll_resp.raise_for_status()
         poll_data = poll_resp.json()
         poll_status = poll_data.get("status", "")
+        print(f"[GPT] Poll #{poll_count} status={poll_status}", file=sys.stderr, flush=True)
         if poll_status == "completed":
             text = _extract_gpt_text(poll_data)
             return text if text else json.dumps(poll_data)[:4000]
