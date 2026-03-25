@@ -96,6 +96,23 @@ def generate_description_claude(prompt):
     return text.strip()
 
 
+def _extract_gpt_text(data):
+    """Extract text from an OpenAI Responses API result.
+
+    Checks output_text (sync responses) then falls back to
+    output[].content[].text (background responses).
+    """
+    text = data.get("output_text") or ""
+    if text:
+        return text.strip()
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for part in item.get("content", []):
+                if part.get("type") == "output_text" and part.get("text"):
+                    return part["text"].strip()
+    return ""
+
+
 def generate_description_gpt(prompt):
     if not OPENAI_API_KEY:
         return "[GPT unavailable: OPENAI_API_KEY not set]"
@@ -104,7 +121,7 @@ def generate_description_gpt(prompt):
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
-    # Step 1: Create a background response (returns immediately with an ID)
+    # Create a background response (returns immediately with an ID)
     resp = requests.post(
         "https://api.openai.com/v1/responses",
         headers=headers,
@@ -119,11 +136,9 @@ def generate_description_gpt(prompt):
     data = resp.json()
     # If it completed immediately, return the text
     if data.get("status") == "completed":
-        text = data.get("output_text", "")
-        if text:
-            return text.strip()
-        return json.dumps(data)[:4000]
-    # Step 2: Poll until completed
+        text = _extract_gpt_text(data)
+        return text if text else json.dumps(data)[:4000]
+    # Poll until completed
     response_id = data.get("id")
     if not response_id:
         return json.dumps(data)[:4000]
@@ -135,11 +150,9 @@ def generate_description_gpt(prompt):
         poll_data = poll_resp.json()
         poll_status = poll_data.get("status", "")
         if poll_status == "completed":
-            text = poll_data.get("output_text", "")
-            if text:
-                return text.strip()
-            return json.dumps(poll_data)[:4000]
+            text = _extract_gpt_text(poll_data)
+            return text if text else json.dumps(poll_data)[:4000]
         elif poll_status in ("failed", "cancelled", "incomplete"):
             error = poll_data.get("error", {})
             return f"[GPT {poll_status}] {json.dumps(error)[:300]}"
-        # Still in_progress — keep polling
+        # Still in_progress or queued — keep polling
