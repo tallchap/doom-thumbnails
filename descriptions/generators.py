@@ -143,7 +143,7 @@ def generate_description_gpt(prompt):
             "input": prompt,
             "background": True,
         },
-        timeout=42,
+        timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
