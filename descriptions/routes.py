@@ -82,7 +82,7 @@ def generate_descriptions():
         results = {}
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {pool.submit(_run_provider, name, fn): name for name, fn in providers}
-            for future in as_completed(futures, timeout=130):
+            for future in as_completed(futures):
                 name = futures[future]
                 try:
                     results[name] = future.result(timeout=5)

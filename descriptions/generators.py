@@ -1,6 +1,7 @@
 """Multi-model YouTube description generation (Gemini, Claude, GPT)."""
 
 import json
+import time
 import requests
 
 from config import (
@@ -99,21 +100,46 @@ def generate_description_gpt(prompt):
     if not OPENAI_API_KEY:
         return "[GPT unavailable: OPENAI_API_KEY not set]"
     _record_api_call(GPT_DESCRIPTION_MODEL, prompt, phase="description_generation_gpt")
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    # Step 1: Create the response (returns quickly with an ID)
     resp = requests.post(
         "https://api.openai.com/v1/responses",
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         json={
             "model": GPT_DESCRIPTION_MODEL,
             "input": prompt,
+            "store": True,
         },
-        timeout=120,
+        timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
-    text = data.get("output_text", "")
-    if text:
-        return text.strip()
-    return json.dumps(data)[:4000]
+    # If it completed immediately, return the text
+    if data.get("status") == "completed":
+        text = data.get("output_text", "")
+        if text:
+            return text.strip()
+        return json.dumps(data)[:4000]
+    # Step 2: Poll until completed
+    response_id = data.get("id")
+    if not response_id:
+        return json.dumps(data)[:4000]
+    poll_url = f"https://api.openai.com/v1/responses/{response_id}"
+    while True:
+        time.sleep(10)
+        poll_resp = requests.get(poll_url, headers=headers, timeout=30)
+        poll_resp.raise_for_status()
+        poll_data = poll_resp.json()
+        poll_status = poll_data.get("status", "")
+        if poll_status == "completed":
+            text = poll_data.get("output_text", "")
+            if text:
+                return text.strip()
+            return json.dumps(poll_data)[:4000]
+        elif poll_status in ("failed", "cancelled", "incomplete"):
+            error = poll_data.get("error", {})
+            return f"[GPT {poll_status}] {json.dumps(error)[:300]}"
+        # Still in_progress — keep polling
