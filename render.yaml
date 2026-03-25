@@ -23,6 +23,8 @@ services:
         sync: false
       - key: AWS_DEFAULT_REGION
         value: "us-east-1"
+      - key: PYTHONDONTWRITEBYTECODE
+        value: "1"
 
   - type: web
     name: doom-format
