@@ -126,20 +126,22 @@ def generate_description_gpt(prompt):
         "input": prompt,
         "background": True,
     }
-    import sys
-    print(f"[GPT] POST /v1/responses background=True timeout=60", file=sys.stderr, flush=True)
     # Create a background response (returns immediately with an ID)
-    resp = requests.post(
-        "https://api.openai.com/v1/responses",
-        headers=headers,
-        json=body,
-        timeout=60,
-    )
+    try:
+        resp = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers=headers,
+            json=body,
+            timeout=(15, 30),
+        )
+    except requests.exceptions.ReadTimeout:
+        return "[GPT error] Background POST timed out at (15,30) — this should not happen with background=True"
+    except requests.exceptions.ConnectTimeout:
+        return "[GPT error] Could not connect to api.openai.com within 15s"
     resp.raise_for_status()
     data = resp.json()
     resp_status = data.get("status", "unknown")
     resp_id = data.get("id", "none")
-    print(f"[GPT] Response id={resp_id} status={resp_status}", file=sys.stderr, flush=True)
     # If it completed immediately, return the text
     if resp_status == "completed":
         text = _extract_gpt_text(data)
