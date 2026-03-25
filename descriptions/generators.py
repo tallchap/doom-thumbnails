@@ -104,14 +104,14 @@ def generate_description_gpt(prompt):
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
-    # Step 1: Create the response (returns quickly with an ID)
+    # Step 1: Create a background response (returns immediately with an ID)
     resp = requests.post(
         "https://api.openai.com/v1/responses",
         headers=headers,
         json={
             "model": GPT_DESCRIPTION_MODEL,
             "input": prompt,
-            "store": True,
+            "background": True,
         },
         timeout=60,
     )
