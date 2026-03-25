@@ -3,7 +3,7 @@ services:
     name: doom-thumbnails
     runtime: python
     buildCommand: find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --timeout 300 --worker-class gthread --threads 4 "app:create_app()"
+    startCommand: find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; gunicorn --bind 0.0.0.0:$PORT --timeout 300 --worker-class gthread --threads 4 "app:create_app()"
     envVars:
       - key: GEMINI_API_KEY
         sync: false
