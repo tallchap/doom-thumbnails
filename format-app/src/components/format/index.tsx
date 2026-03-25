@@ -8,6 +8,7 @@ import { OutputViewer } from "./output-viewer";
 import { PromptEditor } from "./prompt-editor";
 import { TranscriptInput } from "./transcript-input";
 import { chunkTranscript, extractChapterTitlesFormatted, extractSectionHeaders } from "./utils/chunker";
+import { DebugPanel, type DebugLog } from "./debug-panel";
 import { buildLinksChatSystemPrompt, buildLinksChatUserMessage, buildLinksSystemPrompt, buildLinksUserMessage, buildSystemPrompt, buildTitlesChatSystemPrompt, buildTitlesChatUserMessage, buildUserMessage, DEFAULT_PROMPT } from "./utils/prompt";
 import type { ChunkResult, FormatConfig, ChatMessage, TranscriptChunk } from "./utils/types";
 
@@ -28,10 +29,24 @@ export function FormatTranscript() {
   const [linksChatMessages, setLinksChatMessages] = useState<ChatMessage[]>([]);
   const [linksChatStreaming, setLinksChatStreaming] = useState("");
   const [isChattingLinks, setIsChattingLinks] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<DebugLog[]>([]);
   const outputRef = useRef("");
   const abortRef = useRef<AbortController | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const titlesUserEdited = useRef(false);
+
+  const debugLog = useCallback((type: DebugLog["type"], message: string) => {
+    const now = new Date();
+    const timestamp = now.toTimeString().slice(0, 8);
+    setDebugLogs((prev) => [...prev, { timestamp, type, message }]);
+  }, []);
+
+  function readWithTimeout(reader: ReadableStreamDefaultReader<Uint8Array>, ms: number): Promise<ReadableStreamReadResult<Uint8Array>> {
+    return Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Stream read timed out after ${ms / 1000}s — connection likely dropped`)), ms)),
+    ]);
+  }
 
   useEffect(() => {
     if (isProcessing) {
@@ -56,42 +71,78 @@ export function FormatTranscript() {
     setChapterTitles(titles);
   }, []);
 
+  async function processChunk(
+    i: number, parsedChunks: TranscriptChunk[], abort: AbortController,
+    context: { sectionsCompleted: string[]; lastLines: string } | undefined,
+  ): Promise<{ context: { sectionsCompleted: string[]; lastLines: string }; output: string }> {
+    const startTime = Date.now();
+    const payload = JSON.stringify({ systemPrompt: buildSystemPrompt(config, i, parsedChunks.length), userMessage: buildUserMessage(parsedChunks[i].rawText, context) });
+    debugLog("info", `Chunk ${i + 1}: Sending request (${(payload.length / 1024).toFixed(1)}KB payload)`);
+    const response = await fetch("/api/format-chunk", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: payload, signal: abort.signal,
+    });
+    debugLog("info", `Chunk ${i + 1}: Response HTTP ${response.status} (${((Date.now() - startTime) / 1000).toFixed(1)}s)`);
+    if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+    if (!response.body) throw new Error("No response body");
+    const reader = response.body.getReader(); const decoder = new TextDecoder();
+    let chunkOutput = ""; let totalBytes = 0; let firstByte = true; let lastLogTime = Date.now();
+    debugLog("info", `Chunk ${i + 1}: Stream opened, waiting for first byte...`);
+    while (true) {
+      const { done, value } = await readWithTimeout(reader, 45000);
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (firstByte) { debugLog("info", `Chunk ${i + 1}: First byte received (${((Date.now() - startTime) / 1000).toFixed(1)}s since request)`); firstByte = false; }
+      const now = Date.now();
+      if (now - lastLogTime > 5000) { debugLog("info", `Chunk ${i + 1}: Streaming... ${(totalBytes / 1024).toFixed(1)}KB received`); lastLogTime = now; }
+      let text = decoder.decode(value, { stream: true }); if (!chunkOutput) text = text.trimStart(); chunkOutput += text; outputRef.current += text;
+    }
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    debugLog("info", `Chunk ${i + 1}: Stream complete — ${(totalBytes / 1024).toFixed(1)}KB in ${duration}s`);
+    return { context: { sectionsCompleted: extractSectionHeaders(chunkOutput), lastLines: chunkOutput.slice(-500) }, output: chunkOutput };
+  }
+
   async function processAllChunks() {
     const parsedChunks = chunkTranscript(rawTranscript, config.chunkMinutes);
     if (parsedChunks.length === 0) { toast.error("No timestamps detected in transcript"); return; }
     setIsProcessing(true); setChunks(parsedChunks); setChunkResults([]); outputRef.current = ""; setDisplayOutput(""); setChapterTitles(""); setLinks(""); setFinalDocument(""); setTitlesChatMessages([]); setTitlesChatStreaming(""); setLinksChatMessages([]); setLinksChatStreaming("");
     titlesUserEdited.current = false;
+    debugLog("info", `Starting processing: ${parsedChunks.length} chunk(s), ${config.chunkMinutes}min each`);
     const abort = new AbortController(); abortRef.current = abort;
     let context: { sectionsCompleted: string[]; lastLines: string } | undefined;
     for (let i = 0; i < parsedChunks.length; i++) {
       if (abort.signal.aborted) break;
       updateChunkStatus(i, "processing");
-      try {
-        const response = await fetch("/api/format-chunk", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ systemPrompt: buildSystemPrompt(config, i, parsedChunks.length), userMessage: buildUserMessage(parsedChunks[i].rawText, context) }),
-          signal: abort.signal,
-        });
-        if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-        if (!response.body) throw new Error("No response body");
-        const reader = response.body.getReader(); const decoder = new TextDecoder(); let chunkOutput = "";
-        while (true) { const { done, value } = await reader.read(); if (done) break; let text = decoder.decode(value, { stream: true }); if (!chunkOutput) text = text.trimStart(); chunkOutput += text; outputRef.current += text; }
-        context = { sectionsCompleted: extractSectionHeaders(chunkOutput), lastLines: chunkOutput.slice(-500) };
-        updateChunkStatus(i, "done", chunkOutput);
-        // Progressive chapter title extraction (only if user hasn't manually edited)
-        if (!titlesUserEdited.current) {
-          setChapterTitles(extractChapterTitlesFormatted(outputRef.current));
+      let succeeded = false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          if (attempt > 0) debugLog("warn", `Chunk ${i + 1}: Retrying (attempt ${attempt + 1})...`);
+          const result = await processChunk(i, parsedChunks, abort, context);
+          context = result.context;
+          updateChunkStatus(i, "done", result.output);
+          if (!titlesUserEdited.current) setChapterTitles(extractChapterTitlesFormatted(outputRef.current));
+          succeeded = true;
+          break;
+        } catch (err) {
+          if (abort.signal.aborted) break;
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          debugLog("error", `Chunk ${i + 1}: Failed — ${msg}`);
+          if (attempt === 0 && !abort.signal.aborted) {
+            debugLog("warn", `Chunk ${i + 1}: Will retry in 2s...`);
+            await new Promise((r) => setTimeout(r, 2000));
+          }
         }
-      } catch (err) {
-        if (abort.signal.aborted) break;
+      }
+      if (abort.signal.aborted) break;
+      if (!succeeded) {
         updateChunkStatus(i, "error");
-        toast.error(`Chunk ${i + 1} failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+        toast.error(`Chunk ${i + 1} failed after retry`);
+        debugLog("error", `Chunk ${i + 1}: Failed after retry, stopping`);
       }
     }
     if (!abort.signal.aborted) {
-      if (!titlesUserEdited.current) {
-        setChapterTitles(extractChapterTitlesFormatted(outputRef.current));
-      }
+      if (!titlesUserEdited.current) setChapterTitles(extractChapterTitlesFormatted(outputRef.current));
+      debugLog("info", "All chunks done, extracting links...");
       fetchLinks(outputRef.current);
     }
     setIsProcessing(false); abortRef.current = null;
@@ -99,18 +150,24 @@ export function FormatTranscript() {
 
   async function fetchLinks(transcript: string) {
     setIsExtractingLinks(true); setLinks("");
+    const startTime = Date.now();
+    debugLog("info", "Links: Starting extraction with web search...");
     try {
       const response = await fetch("/api/format-chunk", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ systemPrompt: buildLinksSystemPrompt(), userMessage: buildLinksUserMessage(transcript), useWebSearch: true }),
       });
+      debugLog("info", `Links: Response HTTP ${response.status} (${((Date.now() - startTime) / 1000).toFixed(1)}s)`);
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
       if (!response.body) throw new Error("No response body");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let result = "";
-      while (true) { const { done, value } = await reader.read(); if (done) break; let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart(); result += text; setLinks(result); }
+      while (true) { const { done, value } = await readWithTimeout(reader, 45000); if (done) break; let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart(); result += text; setLinks(result); }
       setLinks(result);
+      debugLog("info", `Links: Complete (${((Date.now() - startTime) / 1000).toFixed(1)}s)`);
     } catch (err) {
-      toast.error(`Link extraction failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      debugLog("error", `Links: Failed — ${msg}`);
+      toast.error(`Link extraction failed: ${msg}`);
     }
     setIsExtractingLinks(false);
   }
@@ -121,6 +178,7 @@ export function FormatTranscript() {
     setLinksChatMessages((prev) => [...prev, userMsg]);
     setIsChattingLinks(true);
     setLinksChatStreaming("");
+    debugLog("info", "Links chat: Sending message...");
     try {
       const transcript = outputRef.current || displayOutput;
       const response = await fetch("/api/format-chunk", {
@@ -135,7 +193,7 @@ export function FormatTranscript() {
       if (!response.body) throw new Error("No response body");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let result = "";
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readWithTimeout(reader, 45000);
         if (done) break;
         let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart();
         result += text;
@@ -143,8 +201,11 @@ export function FormatTranscript() {
       }
       setLinksChatMessages((prev) => [...prev, { role: "assistant", content: result.trim() }]);
       setLinksChatStreaming("");
+      debugLog("info", "Links chat: Response complete");
     } catch (err) {
-      toast.error(`Links chat failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      debugLog("error", `Links chat: Failed — ${msg}`);
+      toast.error(`Links chat failed: ${msg}`);
     }
     setIsChattingLinks(false);
   }
@@ -164,6 +225,7 @@ export function FormatTranscript() {
     setTitlesChatMessages((prev) => [...prev, userMsg]);
     setIsChattingTitles(true);
     setTitlesChatStreaming("");
+    debugLog("info", "Titles chat: Sending message...");
     try {
       const transcript = outputRef.current || displayOutput;
       const response = await fetch("/api/format-chunk", {
@@ -177,7 +239,7 @@ export function FormatTranscript() {
       if (!response.body) throw new Error("No response body");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let result = "";
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await readWithTimeout(reader, 45000);
         if (done) break;
         let text = decoder.decode(value, { stream: true }); if (!result) text = text.trimStart();
         result += text;
@@ -185,8 +247,11 @@ export function FormatTranscript() {
       }
       setTitlesChatMessages((prev) => [...prev, { role: "assistant", content: result.trim() }]);
       setTitlesChatStreaming("");
+      debugLog("info", "Titles chat: Response complete");
     } catch (err) {
-      toast.error(`Title chat failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      debugLog("error", `Titles chat: Failed — ${msg}`);
+      toast.error(`Title chat failed: ${msg}`);
     }
     setIsChattingTitles(false);
   }
@@ -299,6 +364,7 @@ export function FormatTranscript() {
           </button>
         )}
       </div>
+      <DebugPanel logs={debugLogs} onClear={() => setDebugLogs([])} />
       <ChunkProgress chunks={chunks} results={chunkResults} />
       <OutputViewer
         output={displayOutput}

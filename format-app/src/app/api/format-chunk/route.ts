@@ -69,9 +69,9 @@ export async function POST(req: NextRequest) {
             }
             controller.enqueue(enc.encode(event.delta.text));
           } else {
-            // Send keepalive space every 10s during thinking to prevent Render idle timeout
+            // Send keepalive space every 5s during thinking to prevent Render idle timeout
             const now = Date.now();
-            if (now - lastKeepAlive > 10000) {
+            if (now - lastKeepAlive > 5000) {
               controller.enqueue(enc.encode(" "));
               lastKeepAlive = now;
             }
