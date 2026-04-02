@@ -12,11 +12,17 @@ from auth import require_auth
 from config import GIT_VERSION, THUMBNAILS_DIR
 from shared.gemini_client import get_client, upload_files_from_bytes
 from shared.helpers import parse_form_or_multipart
-from shared.state import revision_status, revision_status_lock
+from shared.state import get_session
 from thumbnails.generator import build_revision_prompts, run_generation
 from thumbnails.prompts import BORDER_PASS_PROMPT
 
 revision_bp = Blueprint("revision", __name__, template_folder="templates")
+
+
+def _get_revision_session():
+    """Extract session_id from request and return (status_dict, lock)."""
+    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    return get_session(session_id)
 
 
 @revision_bp.route("/revision")
@@ -28,8 +34,9 @@ def revision_index():
 @revision_bp.route("/revise_upload", methods=["POST"])
 @require_auth
 def revise_upload():
-    with revision_status_lock:
-        is_running = revision_status["running"]
+    _st, _lk = _get_revision_session()
+    with _lk:
+        is_running = _st["running"]
     if is_running:
         return jsonify({"error": "Generation already in progress"})
 
@@ -70,12 +77,12 @@ def revise_upload():
     attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
 
     episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
-    with revision_status_lock:
-        revision_status["round_num"] = revision_status.get("round_num", 0) + 1
-        round_num = revision_status["round_num"]
+    with _lk:
+        _st["round_num"] = _st.get("round_num", 0) + 1
+        round_num = _st["round_num"]
         revision_idea_idx = 0
-        revision_status["ideas"] = [f"Revision page: {prompt[:120]}"]
-        revision_status["episode_dir"] = episode_dir
+        _st["ideas"] = [f"Revision page: {prompt[:120]}"]
+        _st["episode_dir"] = episode_dir
 
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
@@ -83,7 +90,7 @@ def revise_upload():
     custom_context = fields.get("revision_context_prompt", "").strip() or None
     prompts = build_revision_prompts(
         [base_img],
-        revision_status.get("speakers", []),
+        _st.get("speakers", []),
         prompt,
         count_per=count,
         idea_idx=revision_idea_idx,
@@ -91,14 +98,14 @@ def revise_upload():
         context_prompt=custom_context,
     )
 
-    revision_status["add_border"] = fields.get("add_border") == "1"
-    revision_status["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
-    run_generation(client, prompts, round_dir, "revision_page", target_status=revision_status, target_lock=revision_status_lock)
-    with revision_status_lock:
+    _st["add_border"] = fields.get("add_border") == "1"
+    _st["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
+    run_generation(client, prompts, round_dir, "revision_page", target_status=_st, target_lock=_lk)
+    with _lk:
         base_src = "uploaded file" if base_files else "follow-up result"
-        revision_status["log"].append(f"Revision base: {base_src}")
-        revision_status["log"].append(f"Prompt: {prompt[:180]}")
-        revision_status["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
-        revision_status["log"].append(f"Requested attempts: {count}")
+        _st["log"].append(f"Revision base: {base_src}")
+        _st["log"].append(f"Prompt: {prompt[:180]}")
+        _st["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
+        _st["log"].append(f"Requested attempts: {count}")
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})

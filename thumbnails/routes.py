@@ -16,7 +16,7 @@ from config import (
 )
 from shared.gemini_client import get_client, upload_files_from_bytes, BRAND_FILES, BORDER_REF_FILES
 from shared.helpers import parse_form_or_multipart
-from shared.state import revision_status, revision_status_lock, get_session
+from shared.state import get_session
 from thumbnails.brave_search import search_images_brave, download_image_bytes
 from thumbnails.generator import (
     generate_ideas, generate_search_queries,
@@ -46,11 +46,7 @@ def index():
 @thumbnails_bp.route("/status")
 @require_auth
 def get_status():
-    params = request.args
-    if params.get("page") == "revision":
-        _st, _lk = revision_status, revision_status_lock
-    else:
-        _st, _lk = _get_session()
+    _st, _lk = _get_session()
     try:
         with _lk:
             safe = {
@@ -93,10 +89,7 @@ def get_status():
 @thumbnails_bp.route("/last_api_call")
 @require_auth
 def last_api_call():
-    if request.args.get("page") == "revision":
-        _st, _lk = revision_status, revision_status_lock
-    else:
-        _st, _lk = _get_session()
+    _st, _lk = _get_session()
     with _lk:
         payload = _st.get("last_api_call", "")
     return jsonify({"ok": True, "text": payload})
@@ -105,10 +98,7 @@ def last_api_call():
 @thumbnails_bp.route("/last_border_api_call")
 @require_auth
 def last_border_api_call():
-    if request.args.get("page") == "revision":
-        _st, _lk = revision_status, revision_status_lock
-    else:
-        _st, _lk = _get_session()
+    _st, _lk = _get_session()
     with _lk:
         payload = _st.get("last_border_api_call", "")
     return jsonify({"ok": True, "text": payload})
@@ -558,12 +548,8 @@ def open_folder():
 @thumbnails_bp.route("/cancel", methods=["POST"])
 @require_auth
 def cancel():
-    params = request.args
-    if params.get("page") == "revision":
-        _st, _lk = revision_status, revision_status_lock
-    else:
-        _st, _lk = _get_session()
-    session_id = params.get("session_id", "default")
+    _st, _lk = _get_session()
+    session_id = request.args.get("session_id", "default")
     with _lk:
         if _st.get("running"):
             _st["cancel_requested"] = True
