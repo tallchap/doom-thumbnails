@@ -20,8 +20,10 @@ revision_bp = Blueprint("revision", __name__, template_folder="templates")
 
 
 def _get_revision_session():
-    """Extract session_id from request and return (status_dict, lock)."""
-    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    """Extract session_id from query string and return (status_dict, lock).
+    Must NOT access request.form — that consumes the body stream and breaks
+    the custom multipart parser used by parse_form_or_multipart."""
+    session_id = request.args.get("session_id") or "default"
     return get_session(session_id)
 
 

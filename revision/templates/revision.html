@@ -530,8 +530,7 @@ async function runRevision() {
   if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
 
   try {
-    fd.append('session_id', SESSION_ID);
-    const resp = await fetch('/revise_upload', { method:'POST', body: fd });
+    const resp = await fetch('/revise_upload?session_id=' + SESSION_ID, { method:'POST', body: fd });
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
     activeOutputDir = data.output_dir || '';
