@@ -119,10 +119,12 @@
 
 <div class="card">
   <label class="section">Video File Path</label>
-  <div class="drop-zone" id="dropZone">
-    <input type="text" id="video" placeholder="/path/to/video.mp4 — or drag & drop a file here">
+  <div class="drop-zone" id="dropZone" style="display:flex;align-items:center;gap:8px;">
+    <input type="text" id="video" placeholder="/path/to/video.mp4 — or drag & drop a file here" style="flex:1;">
+    <button type="button" id="attachBtn" onclick="document.getElementById('fileInput').click()" style="flex-shrink:0;padding:10px 18px;background:#0f3460;color:#fff;border:1px solid #1a4080;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;">Attach</button>
+    <input type="file" id="fileInput" accept="video/*" style="display:none;" onchange="handleFileAttach(this)">
   </div>
-  <div class="drop-hint">Drag a video file from Finder to fill in the path</div>
+  <div class="drop-hint">Drag a video file or click Attach to upload</div>
 </div>
 
 <div class="card">
@@ -297,6 +299,50 @@ function downloadAll() {
   if (dir) window.open("/fc_download_zip?dir=" + encodeURIComponent(dir), "_blank");
 }
 
+// File attach button handler
+async function handleFileAttach(input) {
+  if (!input.files || input.files.length === 0) return;
+  const file = input.files[0];
+  await uploadFileToS3(file);
+  input.value = "";  // reset so same file can be re-selected
+}
+
+async function uploadFileToS3(file) {
+  const sizeMB = (file.size / 1024 / 1024).toFixed(0);
+  try {
+    videoInput.value = "Preparing upload for " + file.name + " (" + sizeMB + " MB)\u2026";
+    const presignResp = await fetch("/fc_presign?filename=" + encodeURIComponent(file.name));
+    const presignData = await presignResp.json();
+    if (presignData.error) { videoInput.value = ""; alert(presignData.error); return; }
+
+    const s3Ok = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const startTime = Date.now();
+      xhr.open("PUT", presignData.url);
+      xhr.setRequestHeader("Content-Type", "video/mp4");
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+          const pct = Math.round(ev.loaded / ev.total * 100);
+          const elapsed = (Date.now() - startTime) / 1000;
+          const speed = ev.loaded / elapsed;
+          const remaining = (ev.total - ev.loaded) / speed;
+          let eta = "";
+          if (elapsed > 2 && remaining > 0) {
+            if (remaining > 60) eta = " \u2014 ~" + Math.ceil(remaining / 60) + " min left";
+            else eta = " \u2014 ~" + Math.ceil(remaining) + "s left";
+          }
+          videoInput.value = "Uploading to S3: " + pct + "% (" + sizeMB + " MB)" + eta;
+        }
+      };
+      xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
+      xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+      xhr.send(file);
+    });
+    if (!s3Ok) { videoInput.value = ""; alert("S3 upload failed. Try again."); return; }
+    videoInput.value = "s3:" + presignData.s3_key;
+  } catch(err) { videoInput.value = ""; alert("Upload failed: " + err.message); }
+}
+
 // Drag & drop support
 const dropZone = document.getElementById("dropZone");
 const videoInput = document.getElementById("video");
@@ -332,48 +378,7 @@ dropZone.addEventListener("drop", async e => {
     if (plain.startsWith("/")) { videoInput.value = plain; return; }
   }
   if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-    const file = e.dataTransfer.files[0];
-    const sizeMB = (file.size / 1024 / 1024).toFixed(0);
-    try {
-      // Step 1: Get presigned S3 upload URL
-      videoInput.value = "Preparing upload for " + file.name + " (" + sizeMB + " MB)\u2026";
-      const presignResp = await fetch("/fc_presign?filename=" + encodeURIComponent(file.name));
-      const presignData = await presignResp.json();
-      if (presignData.error) { videoInput.value = ""; alert(presignData.error); return; }
-
-      // Step 2: Upload directly to S3 with progress tracking
-      const s3Ok = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        const startTime = Date.now();
-        xhr.open("PUT", presignData.url);
-        xhr.setRequestHeader("Content-Type", "video/mp4");
-        xhr.upload.onprogress = (ev) => {
-          if (ev.lengthComputable) {
-            const pct = Math.round(ev.loaded / ev.total * 100);
-            const elapsed = (Date.now() - startTime) / 1000;
-            const speed = ev.loaded / elapsed;
-            const remaining = (ev.total - ev.loaded) / speed;
-            let eta = "";
-            if (elapsed > 2 && remaining > 0) {
-              if (remaining > 60) eta = " \u2014 ~" + Math.ceil(remaining / 60) + " min left";
-              else eta = " \u2014 ~" + Math.ceil(remaining) + "s left";
-            }
-            videoInput.value = "Uploading to S3: " + pct + "% (" + sizeMB + " MB)" + eta;
-          }
-        };
-        xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300);
-        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
-        xhr.send(file);
-      });
-      if (!s3Ok) {
-        videoInput.value = "";
-        alert("S3 upload failed. Try again.");
-        return;
-      }
-
-      // Step 3: Store s3_key so fc_run uses it
-      videoInput.value = "s3:" + presignData.s3_key;
-    } catch(err) { videoInput.value = ""; alert("Upload failed: " + err.message); }
+    await uploadFileToS3(e.dataTransfer.files[0]);
   }
 });
 
