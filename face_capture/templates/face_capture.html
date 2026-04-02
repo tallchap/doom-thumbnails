@@ -165,7 +165,7 @@
 </div>
 
 <script>
-const EXPRESSIONS = {{ fc_expressions }};
+const EXPRESSIONS = {{ fc_expressions | safe }};
 
 const group = document.getElementById("exprGroup");
 EXPRESSIONS.forEach(expr => {
