@@ -15,7 +15,7 @@ from config import (
     GEMINI_MODEL, TEXT_MODEL, THUMBNAILS_DIR, MAX_CONCURRENT, COST_PER_IMAGE,
     MAX_BRAND_REFS_PER_CALL, MAX_SPEAKER_REFS_PER_CALL, MAX_LIRON_REFS_PER_CALL,
 )
-from shared.gemini_client import BRAND_FILES, LIRON_FILES, BORDER_REF_FILES
+from shared.gemini_client import GeminiBackend, get_fallback_backend
 from shared.helpers import _record_api_call
 from shared.state import main_status, main_status_lock, MAX_LOG_ENTRIES
 from thumbnails.prompts import (
@@ -75,6 +75,13 @@ def generate_search_queries(client, title, custom_prompt):
 # ----- Prompt Building -----
 
 
+def _count_identity_refs(refs, max_refs):
+    """How many identity refs will be used (used to decide whether to attach them)."""
+    if not refs:
+        return 0
+    return min(len(refs), max_refs)
+
+
 def _select_identity_refs(refs, max_refs):
     """Choose a small, deterministic subset of identity refs."""
     if not refs:
@@ -82,176 +89,194 @@ def _select_identity_refs(refs, max_refs):
     return list(refs[:max_refs])
 
 
-def _select_brand_refs():
+def _select_brand_refs(backend: GeminiBackend):
     """Choose a minimal style-only subset of brand refs per generation call."""
-    if not BRAND_FILES:
+    if not backend.brand_files:
         return []
-    return list(BRAND_FILES[:min(MAX_BRAND_REFS_PER_CALL, len(BRAND_FILES))])
+    return list(backend.brand_files[:min(MAX_BRAND_REFS_PER_CALL, len(backend.brand_files))])
 
 
-def build_idea_prompts(ideas, speaker_refs, source_refs, custom_prompt, additional_instructions, variations_per=3):
-    """Build prompt content lists for each idea x N variations.
-    Returns list of (idea_idx, variation_num, contents)."""
+def _refs_for_backend(backend: GeminiBackend, per_backend_dict):
+    """Extract this backend's slice from a per-backend dict like {'primary': [...], 'secondary': [...]}."""
+    if not per_backend_dict:
+        return []
+    return list(per_backend_dict.get(backend.name, []))
+
+
+def build_idea_prompts(backends, ideas, speaker_refs_by_backend, source_refs_by_backend, custom_prompt, additional_instructions, variations_per=3):
+    """Build prompt content lists for each idea x N variations, one contents list per backend.
+
+    Returns list of (idea_idx, variation_num, {backend_name: contents}) tuples.
+    speaker_refs_by_backend / source_refs_by_backend are dicts keyed by backend.name
+    containing file refs for each backend (since File API handles are per-key).
+    """
     custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
     addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
-    selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
-    speaker_section = (
-        "SPEAKER LIKENESS (CRITICAL): A targeted subset of the episode speaker photo library is attached below. "
-        "The person(s) in the thumbnail MUST closely resemble these photos — same face, same features, "
-        "same skin tone, same hair. Do NOT use generic faces. The speaker photos are the ground truth "
-        "for what the person looks like."
-        if selected_speaker_refs else ""
-    )
 
     prompts = []
     for idea_idx, idea_text in enumerate(ideas):
         idea_mentions_liron = "liron" in idea_text.lower()
-        selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL) if idea_mentions_liron else []
-        liron_section = (
-            "LIRON SHAPIRA (HOST) — CRITICAL FACE MATCH REQUIREMENT:\n"
-            "A targeted subset of Liron Shapira reference photos is attached below. "
-            "If Liron appears in this thumbnail, his face MUST be a faithful reproduction of the person in these photos — "
-            "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
-            "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness from the reference photos."
-            if selected_liron_refs else ""
-        )
 
         for v in range(variations_per):
-            prompt_text = IDEA_THUMBNAIL_PROMPT.format(
-                idea_text=idea_text,
-                custom_prompt_section=custom_section,
-                brand_guide=BRAND_GUIDE,
-                speaker_section=speaker_section,
-                liron_section="",
-                additional_instructions=addl,
-                variation_seed=v + 1,
-                variation_total=variations_per,
-            )
-            contents = [prompt_text]
-
-            if selected_liron_refs:
-                contents.append(
-                    "In this image, you must make one of the faces look like Liron Shapira. "
-                    "Liron Shapira looks like the following enclosed images:"
+            contents_by_backend = {}
+            for backend in backends:
+                speaker_refs = _refs_for_backend(backend, speaker_refs_by_backend)
+                source_refs = _refs_for_backend(backend, source_refs_by_backend)
+                selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
+                speaker_section = (
+                    "SPEAKER LIKENESS (CRITICAL): A targeted subset of the episode speaker photo library is attached below. "
+                    "The person(s) in the thumbnail MUST closely resemble these photos — same face, same features, "
+                    "same skin tone, same hair. Do NOT use generic faces. The speaker photos are the ground truth "
+                    "for what the person looks like."
+                    if selected_speaker_refs else ""
                 )
-                for lf in selected_liron_refs:
-                    contents.append(lf)
-                contents.append(
-                    "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
-                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
-                    "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
+                selected_liron_refs = _select_identity_refs(backend.liron_files, MAX_LIRON_REFS_PER_CALL) if idea_mentions_liron else []
+
+                prompt_text = IDEA_THUMBNAIL_PROMPT.format(
+                    idea_text=idea_text,
+                    custom_prompt_section=custom_section,
+                    brand_guide=BRAND_GUIDE,
+                    speaker_section=speaker_section,
+                    liron_section="",
+                    additional_instructions=addl,
+                    variation_seed=v + 1,
+                    variation_total=variations_per,
                 )
+                contents = [prompt_text]
 
-            brand_sample = _select_brand_refs()
-            if brand_sample:
-                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
-                contents.extend(brand_sample)
+                if selected_liron_refs:
+                    contents.append(
+                        "In this image, you must make one of the faces look like Liron Shapira. "
+                        "Liron Shapira looks like the following enclosed images:"
+                    )
+                    for lf in selected_liron_refs:
+                        contents.append(lf)
+                    contents.append(
+                        "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
+                        "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                        "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
+                    )
 
-            if selected_speaker_refs:
-                contents.append("=== SPEAKER PHOTOS — targeted subset; the thumbnail MUST use these people's real faces ===")
-                contents.extend(selected_speaker_refs)
+                brand_sample = _select_brand_refs(backend)
+                if brand_sample:
+                    contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
+                    contents.extend(brand_sample)
 
-            if source_refs:
-                contents.append("=== SOURCE IMAGES — use these as visual reference material ===")
-                contents.extend(source_refs)
+                if selected_speaker_refs:
+                    contents.append("=== SPEAKER PHOTOS — targeted subset; the thumbnail MUST use these people's real faces ===")
+                    contents.extend(selected_speaker_refs)
 
-            prompts.append((idea_idx, v, contents))
+                if source_refs:
+                    contents.append("=== SOURCE IMAGES — use these as visual reference material ===")
+                    contents.extend(source_refs)
+
+                contents_by_backend[backend.name] = contents
+
+            prompts.append((idea_idx, v, contents_by_backend))
 
     return prompts
 
 
-def build_riff_prompts(idea_text, idea_idx, speaker_refs, source_refs, custom_prompt, additional_instructions, count=3):
+def build_riff_prompts(backends, idea_text, idea_idx, speaker_refs_by_backend, source_refs_by_backend, custom_prompt, additional_instructions, count=3):
     """Build prompts for riffing on a single idea."""
     return build_idea_prompts(
-        [idea_text], speaker_refs, source_refs, custom_prompt, additional_instructions, variations_per=count
+        backends, [idea_text], speaker_refs_by_backend, source_refs_by_backend,
+        custom_prompt, additional_instructions, variations_per=count,
     )
 
 
-def build_variation_prompts(selected_images, speaker_refs, count_per=3):
-    """Build variation prompts from selected images."""
-    selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
-    speaker_section = (
-        "SPEAKER LIKENESS (CRITICAL): A targeted subset of speaker photos is attached — the person(s) MUST closely "
-        "resemble these photos. Same face, features, skin tone, hair."
-        if selected_speaker_refs else ""
-    )
+def build_variation_prompts(backends, selected_images, speaker_refs_by_backend, count_per=3):
+    """Build variation prompts from selected images.
+
+    selected_images is a plain list of PIL images (or raw bytes) — not per-backend.
+    """
     prompts = []
     for img in selected_images:
         for v in range(count_per):
-            prompt_text = VARIATION_PROMPT.format(
-                speaker_section=speaker_section,
-                variation_seed=v + 1,
-                variation_total=count_per,
-            )
-            contents = [prompt_text, img]
-            brand_sample = _select_brand_refs()
-            if brand_sample:
-                contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
-                contents.extend(brand_sample)
-            if selected_speaker_refs:
-                contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
-                contents.extend(selected_speaker_refs)
-            prompts.append((-1, v, contents))
+            contents_by_backend = {}
+            for backend in backends:
+                speaker_refs = _refs_for_backend(backend, speaker_refs_by_backend)
+                selected_speaker_refs = _select_identity_refs(speaker_refs, MAX_SPEAKER_REFS_PER_CALL)
+                speaker_section = (
+                    "SPEAKER LIKENESS (CRITICAL): A targeted subset of speaker photos is attached — the person(s) MUST closely "
+                    "resemble these photos. Same face, features, skin tone, hair."
+                    if selected_speaker_refs else ""
+                )
+                prompt_text = VARIATION_PROMPT.format(
+                    speaker_section=speaker_section,
+                    variation_seed=v + 1,
+                    variation_total=count_per,
+                )
+                contents = [prompt_text, img]
+                brand_sample = _select_brand_refs(backend)
+                if brand_sample:
+                    contents.append("=== DOOM DEBATES BRAND STYLE ONLY — match colors, layout, typography, energy. WARNING: These images contain people — COMPLETELY IGNORE all faces/people in these images. Do NOT reproduce any human likeness from these references. ===")
+                    contents.extend(brand_sample)
+                if selected_speaker_refs:
+                    contents.append("=== SPEAKER PHOTOS (targeted subset) ===")
+                    contents.extend(selected_speaker_refs)
+                contents_by_backend[backend.name] = contents
+            prompts.append((-1, v, contents_by_backend))
     return prompts
 
 
-def build_revision_prompts(selected_images, speaker_refs, custom_prompt, count_per=3, idea_idx=-1, attachment_refs=None, context_prompt=None):
+def build_revision_prompts(backends, selected_images, speaker_refs_by_backend, custom_prompt, count_per=3, idea_idx=-1, attachment_refs_by_backend=None, context_prompt=None):
     """Build revision prompts with custom instructions."""
     prompts = []
     mentions_liron = "liron" in (custom_prompt or "").lower()
-    selected_liron_refs = _select_identity_refs(LIRON_FILES, MAX_LIRON_REFS_PER_CALL) if mentions_liron else []
-    liron_instruction = (
-        "Note: this image includes Liron Shapira. His face MUST faithfully match the attached Liron reference photos "
-        "(same facial structure, eyes, nose, beard shape, skin tone). Do NOT generate a generic person or alter identity."
-        if selected_liron_refs else ""
-    )
 
     for img in selected_images:
         for v in range(count_per):
-            prompt_text = REVISION_PROMPT.format(
-                custom_prompt=custom_prompt,
-                variation_seed=v + 1,
-                variation_total=count_per,
-            )
-            contents = [prompt_text, img]
-            if selected_liron_refs:
-                contents.append(
-                    "In this image, you must make one of the faces look like Liron Shapira. "
-                    "Liron Shapira looks like the following enclosed images:"
+            contents_by_backend = {}
+            for backend in backends:
+                selected_liron_refs = _select_identity_refs(backend.liron_files, MAX_LIRON_REFS_PER_CALL) if mentions_liron else []
+                attachment_refs = _refs_for_backend(backend, attachment_refs_by_backend)
+
+                prompt_text = REVISION_PROMPT.format(
+                    custom_prompt=custom_prompt,
+                    variation_seed=v + 1,
+                    variation_total=count_per,
                 )
-                contents.extend(selected_liron_refs)
-                contents.append(
-                    "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
-                    "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
-                    "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
-                )
-            contents.append(context_prompt or REVISION_CONTEXT_PROMPT)
-            brand_sample = _select_brand_refs()
-            if brand_sample:
-                contents.extend(brand_sample)
-            if attachment_refs:
-                contents.append("The user has attached the following reference image(s) — use them to guide the revision:")
-                contents.extend(attachment_refs)
-            prompts.append((idea_idx, v, contents))
+                contents = [prompt_text, img]
+                if selected_liron_refs:
+                    contents.append(
+                        "In this image, you must make one of the faces look like Liron Shapira. "
+                        "Liron Shapira looks like the following enclosed images:"
+                    )
+                    contents.extend(selected_liron_refs)
+                    contents.append(
+                        "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
+                        "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
+                        "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
+                    )
+                contents.append(context_prompt or REVISION_CONTEXT_PROMPT)
+                brand_sample = _select_brand_refs(backend)
+                if brand_sample:
+                    contents.extend(brand_sample)
+                if attachment_refs:
+                    contents.append("The user has attached the following reference image(s) — use them to guide the revision:")
+                    contents.extend(attachment_refs)
+                contents_by_backend[backend.name] = contents
+            prompts.append((idea_idx, v, contents_by_backend))
     return prompts
 
 
 # ----- Async Generation -----
 
 
-async def apply_border_pass(client, img_data, prompt_override=None, target_status=None, target_lock=None):
+async def apply_border_pass(backend: GeminiBackend, img_data, prompt_override=None, target_status=None, target_lock=None):
     """Second Gemini pass: add red border + DOOM DEBATES wordmark."""
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
-    if not BORDER_REF_FILES:
+    if not backend.border_ref_files:
         return None
     try:
         prompt_text = prompt_override or BORDER_PASS_PROMPT
         source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
-        border_contents = list(BORDER_REF_FILES) + [source_img, prompt_text]
+        border_contents = list(backend.border_ref_files) + [source_img, prompt_text]
         _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call", target_status=_st, target_lock=_lk)
         response = await asyncio.wait_for(
-            client.aio.models.generate_content(
+            backend.client.aio.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=border_contents,
                 config=types.GenerateContentConfig(
@@ -275,9 +300,13 @@ async def apply_border_pass(client, img_data, prompt_override=None, target_statu
     return None
 
 
-async def generate_batch(client, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
+async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
     """Fire parallel Gemini API calls and save results.
-    prompts is a list of (idea_idx, variation_num, contents)."""
+
+    prompts is a list of (idea_idx, variation_num, contents_by_backend) where
+    contents_by_backend is {backend_name: [contents]} — one contents list per backend.
+    On 429 from primary, the batch swaps its current backend to secondary.
+    """
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
     os.makedirs(output_dir, exist_ok=True)
@@ -285,17 +314,41 @@ async def generate_batch(client, prompts, output_dir, phase="round1", target_sta
     with _lk:
         start_idx = len(_st["images"])
 
-    async def generate_one(idx, idea_idx, contents):
+    # Mutable, shared across all concurrent generate_one tasks. On 429, one task
+    # may swap this to the fallback backend; all subsequent tasks pick up the new backend.
+    current_backend_ref = [backend]
+    swap_lock = threading.Lock()
+
+    def _maybe_swap(log_prefix):
+        """Swap current backend to fallback if available. Return the (possibly new) backend."""
+        with swap_lock:
+            cur = current_backend_ref[0]
+            fb = get_fallback_backend(cur)
+            if fb is None or fb is cur:
+                return cur
+            current_backend_ref[0] = fb
+            with _lk:
+                _st["log"].append(f"{log_prefix}: primary rate-limited, swapping batch to {fb.name}")
+            return fb
+
+    async def generate_one(idx, idea_idx, contents_by_backend):
         async with sem:
             with _lk:
                 if _st.get("cancel_requested"):
                     _st["log"].append(f"thumb_{idx:03d}: cancelled")
                     return None
             for attempt in range(3):
+                cur_backend = current_backend_ref[0]
+                contents = contents_by_backend.get(cur_backend.name)
+                if contents is None:
+                    with _lk:
+                        _st["errors"] += 1
+                        _st["log"].append(f"thumb_{idx:03d}: no contents for backend {cur_backend.name}")
+                    return None
                 try:
                     _record_api_call(GEMINI_MODEL, contents, phase=phase, target_status=_st, target_lock=_lk)
                     response = await asyncio.wait_for(
-                        client.aio.models.generate_content(
+                        cur_backend.client.aio.models.generate_content(
                             model=GEMINI_MODEL,
                             contents=contents,
                             config=types.GenerateContentConfig(
@@ -314,10 +367,10 @@ async def generate_batch(client, prompts, output_dir, phase="round1", target_sta
                             if part.inline_data and part.inline_data.data:
                                 img_data = part.inline_data.data
 
-                                if _st.get("add_border") and BORDER_REF_FILES:
+                                if _st.get("add_border") and cur_backend.border_ref_files:
                                     with _lk:
                                         _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
-                                    border_result = await apply_border_pass(client, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk)
+                                    border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk)
                                     if border_result:
                                         img_data = border_result
                                         with _lk:
@@ -349,7 +402,7 @@ async def generate_batch(client, prompts, output_dir, phase="round1", target_sta
                                         _st["idea_groups"].setdefault(idea_idx, []).append(img_entry)
 
                                     _st["log"].append(
-                                        f"[{_st['completed']}/{_st['total']}] thumb_{idx:03d}.png OK"
+                                        f"[{_st['completed']}/{_st['total']}] thumb_{idx:03d}.png OK ({cur_backend.name})"
                                     )
                                 return filepath
 
@@ -367,15 +420,20 @@ async def generate_batch(client, prompts, output_dir, phase="round1", target_sta
                 except Exception as e:
                     err = str(e)
                     if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < 2:
-                        wait = (2 ** attempt) + random.random()
-                        with _lk:
-                            if _st.get("cancel_requested"):
-                                _st["log"].append(f"thumb_{idx:03d}: cancelled")
-                                return None
-                            _st["log"].append(
-                                f"thumb_{idx:03d}: rate limited, retrying in {wait:.1f}s..."
-                            )
-                        await asyncio.sleep(wait)
+                        # Try swapping to fallback backend once per batch. If already on fallback,
+                        # just do the usual backoff-and-retry dance.
+                        new_backend = _maybe_swap(f"thumb_{idx:03d}")
+                        if new_backend is cur_backend:
+                            wait = (2 ** attempt) + random.random()
+                            with _lk:
+                                if _st.get("cancel_requested"):
+                                    _st["log"].append(f"thumb_{idx:03d}: cancelled")
+                                    return None
+                                _st["log"].append(
+                                    f"thumb_{idx:03d}: rate limited on {cur_backend.name}, retrying in {wait:.1f}s..."
+                                )
+                            await asyncio.sleep(wait)
+                        # New backend selected OR backing off — loop back and try again.
                         continue
                     with _lk:
                         _st["errors"] += 1
@@ -383,14 +441,14 @@ async def generate_batch(client, prompts, output_dir, phase="round1", target_sta
                     return None
 
     tasks = [
-        generate_one(start_idx + i + 1, idea_idx, contents)
-        for i, (idea_idx, _var, contents) in enumerate(prompts)
+        generate_one(start_idx + i + 1, idea_idx, contents_by_backend)
+        for i, (idea_idx, _var, contents_by_backend) in enumerate(prompts)
     ]
     results = await asyncio.gather(*tasks)
     return [r for r in results if r]
 
 
-def run_generation(client, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
+def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
     """Run async generation in a background thread."""
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -420,7 +478,7 @@ def run_generation(client, prompts, output_dir, phase="round1", target_status=No
         asyncio.set_event_loop(loop)
         try:
             results = loop.run_until_complete(
-                generate_batch(client, prompts, output_dir, phase, target_status=_st, target_lock=_lk)
+                generate_batch(backend, prompts, output_dir, phase, target_status=_st, target_lock=_lk)
             )
             with _lk:
                 _st["log"].append(

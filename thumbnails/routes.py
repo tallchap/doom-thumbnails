@@ -14,7 +14,7 @@ from auth import require_auth
 from config import (
     APP_MODE, BRAVE_API_KEY, GIT_VERSION, THUMBNAILS_DIR,
 )
-from shared.gemini_client import get_client, upload_files_from_bytes, BRAND_FILES, BORDER_REF_FILES
+from shared.gemini_client import get_primary_backend, get_all_backends, upload_files_from_bytes
 from shared.helpers import parse_form_or_multipart
 from shared.state import get_session
 from thumbnails.brave_search import search_images_brave, download_image_bytes
@@ -32,6 +32,18 @@ def _get_session():
     """Extract session_id from request and return (status_dict, lock)."""
     session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
     return get_session(session_id)
+
+
+def _normalize_backend_refs(refs):
+    """Accept either a per-backend dict (new) or a bare list (legacy/None) and
+    return a per-backend dict {'primary': [...], 'secondary': [...]}.
+
+    Legacy bare lists are treated as primary-only since they were uploaded before
+    multi-backend support and have no secondary handles.
+    """
+    if isinstance(refs, dict):
+        return {k: list(v) for k, v in refs.items()}
+    return {"primary": list(refs or []), "secondary": []}
 
 
 @thumbnails_bp.route("/")
@@ -119,7 +131,8 @@ def revision_context_prompt():
 @thumbnails_bp.route("/revision_prompt_template")
 @require_auth
 def revision_prompt_template():
-    return jsonify({"ok": True, "text": REVISION_PROMPT, "brand_count": len(BRAND_FILES), "border_count": len(BORDER_REF_FILES)})
+    primary = get_primary_backend()
+    return jsonify({"ok": True, "text": REVISION_PROMPT, "brand_count": len(primary.brand_files), "border_count": len(primary.border_ref_files)})
 
 
 @thumbnails_bp.route("/image")
@@ -164,8 +177,8 @@ def gather_images():
         return jsonify({"error": "BRAVE_API_KEY not configured. Upload source images manually."})
 
     try:
-        client = get_client()
-        queries = generate_search_queries(client, title, custom_prompt)
+        backend = get_primary_backend()
+        queries = generate_search_queries(backend.client, title, custom_prompt)
         images = search_images_brave(queries)
         return jsonify({"ok": True, "queries": queries, "images": images})
     except Exception as e:
@@ -185,8 +198,8 @@ def generate_ideas_route():
         return jsonify({"error": "Episode title is required"})
 
     try:
-        client = get_client()
-        ideas_list = generate_ideas(client, title, custom_prompt, transcript_text, additional)
+        backend = get_primary_backend()
+        ideas_list = generate_ideas(backend.client, title, custom_prompt, transcript_text, additional)
         _st, _lk = _get_session()
         with _lk:
             _st["ideas"] = ideas_list
@@ -219,9 +232,9 @@ def more_ideas():
         extra_instruction = "\n\nAVOID duplicating these existing ideas:\n" + "\n".join(f"- {s}" for s in summaries)
 
     try:
-        client = get_client()
+        backend = get_primary_backend()
         combined_additional = (additional + extra_instruction) if additional else extra_instruction
-        new_ideas = generate_ideas(client, title, custom_prompt, transcript_text, combined_additional)
+        new_ideas = generate_ideas(backend.client, title, custom_prompt, transcript_text, combined_additional)
         return jsonify({"ok": True, "ideas": new_ideas})
     except Exception as e:
         return jsonify({"error": f"Idea generation failed: {str(e)[:200]}"})
@@ -250,19 +263,20 @@ def generate_from_ideas():
     if not ideas_list:
         return jsonify({"error": "No ideas provided"})
 
-    client = get_client()
-    speaker_refs = upload_files_from_bytes(client, files.get("speakers", []), "speaker")
-    source_refs = upload_files_from_bytes(client, files.get("sources", []), "source")
+    backends = get_all_backends()
+    primary = backends[0]
+    speaker_refs_by_backend = upload_files_from_bytes(files.get("speakers", []), "speaker")
+    source_refs_by_backend = upload_files_from_bytes(files.get("sources", []), "source")
 
     # Persist speaker/source refs across re-runs: reuse previous if none uploaded
-    if speaker_refs:
-        print(f"[THUMB] generate_from_ideas | new speaker_refs={len(speaker_refs)}")
+    if any(speaker_refs_by_backend.values()):
+        print(f"[THUMB] generate_from_ideas | new speaker_refs={len(speaker_refs_by_backend.get('primary', []))}")
     else:
-        speaker_refs = _st.get("speakers", [])
-        print(f"[THUMB] generate_from_ideas | reusing stored speaker_refs={len(speaker_refs)}")
-    if not source_refs:
-        source_refs = list(_st.get("sources", []))
-        print(f"[THUMB] generate_from_ideas | reusing stored source_refs={len(source_refs)}")
+        speaker_refs_by_backend = _normalize_backend_refs(_st.get("speakers"))
+        print(f"[THUMB] generate_from_ideas | reusing stored speaker_refs={len(speaker_refs_by_backend.get('primary', []))}")
+    if not any(source_refs_by_backend.values()):
+        source_refs_by_backend = _normalize_backend_refs(_st.get("sources"))
+        print(f"[THUMB] generate_from_ideas | reusing stored source_refs={len(source_refs_by_backend.get('primary', []))}")
 
     source_urls_json = fields.get("source_urls", "[]")
     try:
@@ -273,8 +287,9 @@ def generate_from_ideas():
     for url in source_urls[:15]:
         img_bytes = download_image_bytes(url)
         if img_bytes:
-            refs = upload_files_from_bytes(client, [img_bytes], "web_source")
-            source_refs.extend(refs)
+            extra = upload_files_from_bytes([img_bytes], "web_source")
+            for name, refs in extra.items():
+                source_refs_by_backend.setdefault(name, []).extend(refs)
 
     slug = re.sub(r"[^a-z0-9]+", "-", title[:40].lower()).strip("-") or "episode"
     date = datetime.date.today().isoformat()
@@ -282,29 +297,31 @@ def generate_from_ideas():
     round_dir = os.path.join(episode_dir, "round1")
     os.makedirs(round_dir, exist_ok=True)
 
+    num_speakers = len(speaker_refs_by_backend.get("primary", []))
+    num_sources = len(source_refs_by_backend.get("primary", []))
     info_dict = {
         "title": title,
         "custom_prompt": custom_prompt,
         "num_ideas": len(ideas_list),
-        "num_speaker_photos": len(speaker_refs),
-        "num_source_images": len(source_refs),
+        "num_speaker_photos": num_speakers,
+        "num_source_images": num_sources,
     }
     with open(os.path.join(episode_dir, "episode.json"), "w") as f:
         json.dump(info_dict, f, indent=2)
 
-    prompts = build_idea_prompts(ideas_list, speaker_refs, source_refs, custom_prompt, additional, variations_per=3)
+    prompts = build_idea_prompts(backends, ideas_list, speaker_refs_by_backend, source_refs_by_backend, custom_prompt, additional, variations_per=3)
     save_metadata(round_dir, info_dict, len(prompts), "round1")
 
     _st["episode_dir"] = episode_dir
-    _st["speakers"] = speaker_refs
-    _st["sources"] = source_refs
+    _st["speakers"] = speaker_refs_by_backend
+    _st["sources"] = source_refs_by_backend
     _st["ideas"] = ideas_list
     _st["round_num"] = 1
     _st["add_border"] = fields.get("add_border") == "1"
 
     session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
-    print(f"[THUMB] generate_from_ideas | session={session_id} | ideas={len(ideas_list)} | speakers={len(speaker_refs)} | sources={len(source_refs)} | prompts={len(prompts)} | dir={round_dir}")
-    run_generation(client, prompts, round_dir, "round1", target_status=_st, target_lock=_lk)
+    print(f"[THUMB] generate_from_ideas | session={session_id} | ideas={len(ideas_list)} | speakers={num_speakers} | sources={num_sources} | prompts={len(prompts)} | dir={round_dir}")
+    run_generation(primary, prompts, round_dir, "round1", target_status=_st, target_lock=_lk)
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 
@@ -331,11 +348,13 @@ def riff_idea():
     if riff_prompt:
         additional = (additional + "\n\nRIFF INSTRUCTIONS: " + riff_prompt) if additional else "RIFF INSTRUCTIONS: " + riff_prompt
 
-    client = get_client()
-    speaker_refs = _st.get("speakers", [])
-    source_refs = list(_st.get("sources", []))
-    riff_image_refs = upload_files_from_bytes(client, files.get("riff_images", []), "riff_img")
-    source_refs.extend(riff_image_refs)
+    backends = get_all_backends()
+    primary = backends[0]
+    speaker_refs_by_backend = _normalize_backend_refs(_st.get("speakers"))
+    source_refs_by_backend = _normalize_backend_refs(_st.get("sources"))
+    riff_image_refs_by_backend = upload_files_from_bytes(files.get("riff_images", []), "riff_img")
+    for name, refs in riff_image_refs_by_backend.items():
+        source_refs_by_backend.setdefault(name, []).extend(refs)
 
     episode_dir = _st.get("episode_dir", "")
     if not episode_dir:
@@ -365,11 +384,11 @@ def riff_idea():
         riff_count = 3
     if riff_count > 50:
         riff_count = 50
-    prompts_raw = build_idea_prompts([idea_text], speaker_refs, source_refs, custom_prompt, additional, variations_per=riff_count)
+    prompts_raw = build_idea_prompts(backends, [idea_text], speaker_refs_by_backend, source_refs_by_backend, custom_prompt, additional, variations_per=riff_count)
     prompts = [(riff_idea_idx, var, contents) for (_, var, contents) in prompts_raw]
 
     _st["add_border"] = fields.get("add_border") == "1"
-    run_generation(client, prompts, round_dir, "riff", target_status=_st, target_lock=_lk)
+    run_generation(primary, prompts, round_dir, "riff", target_status=_st, target_lock=_lk)
     return jsonify({
         "ok": True, "output_dir": round_dir, "count": len(prompts),
         "riff_idea_idx": riff_idea_idx, "riff_label": idea_text,
@@ -410,9 +429,10 @@ def revise_post():
         else:
             return jsonify({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(_st['images'])) + " known images). Try regenerating."})
 
-    client = get_client()
-    attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
-    speakers = _st.get("speakers", [])
+    backends = get_all_backends()
+    primary = backends[0]
+    attachment_refs_by_backend = upload_files_from_bytes(files.get("revision_images", []), "revision_img")
+    speaker_refs_by_backend = _normalize_backend_refs(_st.get("speakers"))
     episode_dir = _st.get("episode_dir", "")
 
     try:
@@ -453,13 +473,13 @@ def revise_post():
     os.makedirs(round_dir, exist_ok=True)
 
     prompts = build_revision_prompts(
-        selected_images, speakers, custom_prompt,
+        backends, selected_images, speaker_refs_by_backend, custom_prompt,
         count_per=3, idea_idx=revision_idea_idx,
-        attachment_refs=attachment_refs if attachment_refs else None,
+        attachment_refs_by_backend=attachment_refs_by_backend if any(attachment_refs_by_backend.values()) else None,
     )
 
     _st["add_border"] = fields.get("add_border") == "1"
-    run_generation(client, prompts, round_dir, "revision", target_status=_st, target_lock=_lk)
+    run_generation(primary, prompts, round_dir, "revision", target_status=_st, target_lock=_lk)
 
     return jsonify({
         "ok": True, "output_dir": round_dir, "count": len(prompts),
@@ -492,7 +512,7 @@ def vary():
         else:
             return jsonify({"error": "Could not load selected images (indices " + indices_raw + " not found among " + str(len(_st['images'])) + " known images). Try regenerating."})
 
-    speakers = _st.get("speakers", [])
+    speaker_refs_by_backend = _normalize_backend_refs(_st.get("speakers"))
     episode_dir = _st.get("episode_dir", "")
     with _lk:
         _st["round_num"] = _st.get("round_num", 1) + 1
@@ -500,9 +520,10 @@ def vary():
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
 
-    prompts = build_variation_prompts(selected_images, speakers, count_per=3)
-    client = get_client()
-    run_generation(client, prompts, round_dir, "variation", target_status=_st, target_lock=_lk)
+    backends = get_all_backends()
+    primary = backends[0]
+    prompts = build_variation_prompts(backends, selected_images, speaker_refs_by_backend, count_per=3)
+    run_generation(primary, prompts, round_dir, "variation", target_status=_st, target_lock=_lk)
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})
 

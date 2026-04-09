@@ -10,7 +10,7 @@ from PIL import Image
 
 from auth import require_auth
 from config import GIT_VERSION, THUMBNAILS_DIR
-from shared.gemini_client import get_client, upload_files_from_bytes
+from shared.gemini_client import get_primary_backend, get_all_backends, upload_files_from_bytes
 from shared.helpers import parse_form_or_multipart
 from shared.state import get_session
 from thumbnails.generator import build_revision_prompts, run_generation
@@ -75,8 +75,9 @@ def revise_upload():
         except Exception as e:
             return jsonify({"error": f"Could not load follow-up base image: {str(e)[:200]}"})
 
-    client = get_client()
-    attachment_refs = upload_files_from_bytes(client, files.get("revision_images", []), "revision_img")
+    backends = get_all_backends()
+    primary = backends[0]
+    attachment_refs_by_backend = upload_files_from_bytes(files.get("revision_images", []), "revision_img")
 
     episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
     with _lk:
@@ -89,20 +90,27 @@ def revise_upload():
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
 
+    stored_speakers = _st.get("speakers")
+    if isinstance(stored_speakers, dict):
+        speaker_refs_by_backend = stored_speakers
+    else:
+        speaker_refs_by_backend = {"primary": list(stored_speakers or []), "secondary": []}
+
     custom_context = fields.get("revision_context_prompt", "").strip() or None
     prompts = build_revision_prompts(
+        backends,
         [base_img],
-        _st.get("speakers", []),
+        speaker_refs_by_backend,
         prompt,
         count_per=count,
         idea_idx=revision_idea_idx,
-        attachment_refs=attachment_refs if attachment_refs else None,
+        attachment_refs_by_backend=attachment_refs_by_backend if any(attachment_refs_by_backend.values()) else None,
         context_prompt=custom_context,
     )
 
     _st["add_border"] = fields.get("add_border") == "1"
     _st["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
-    run_generation(client, prompts, round_dir, "revision_page", target_status=_st, target_lock=_lk)
+    run_generation(primary, prompts, round_dir, "revision_page", target_status=_st, target_lock=_lk)
     with _lk:
         base_src = "uploaded file" if base_files else "follow-up result"
         _st["log"].append(f"Revision base: {base_src}")

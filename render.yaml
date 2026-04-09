@@ -7,6 +7,8 @@ services:
     envVars:
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_API_KEY_2
+        sync: false
       - key: APP_PASSWORD
         sync: false
       - key: BRAVE_API_KEY
