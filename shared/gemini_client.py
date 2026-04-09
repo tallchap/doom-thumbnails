@@ -36,13 +36,9 @@ def _build_backends() -> List[GeminiBackend]:
     primary_key = os.environ.get("GEMINI_API_KEY", "")
     secondary_key = os.environ.get("GEMINI_API_KEY_2", "")
     if not primary_key:
-        print("ERROR: GEMINI_API_KEY not set.")
-        print("Add it to .env file or export GEMINI_API_KEY='your-key'")
-        sys.exit(1)
+        raise RuntimeError("GEMINI_API_KEY not set. Add it to .env or export GEMINI_API_KEY='your-key'")
     if not secondary_key:
-        print("ERROR: GEMINI_API_KEY_2 not set (required secondary key for rate-limit fallback).")
-        print("Add it to .env file or export GEMINI_API_KEY_2='your-key'")
-        sys.exit(1)
+        raise RuntimeError("GEMINI_API_KEY_2 not set (required secondary key for rate-limit fallback). Add it to .env or export GEMINI_API_KEY_2='your-key'")
     return [
         GeminiBackend(name="primary", client=genai.Client(api_key=primary_key)),
         GeminiBackend(name="secondary", client=genai.Client(api_key=secondary_key)),
@@ -52,6 +48,8 @@ def _build_backends() -> List[GeminiBackend]:
 def get_primary_backend() -> GeminiBackend:
     """Get primary backend. Triggers lazy ref upload on first call."""
     ensure_gemini_ready()
+    if not BACKENDS:
+        raise RuntimeError("Gemini backends failed to initialize. Check server logs for upload errors and GEMINI_API_KEY / GEMINI_API_KEY_2 env vars.")
     return BACKENDS[0]
 
 
@@ -67,6 +65,8 @@ def get_fallback_backend(current: GeminiBackend) -> Optional[GeminiBackend]:
 def get_all_backends() -> List[GeminiBackend]:
     """Return all initialized backends (primary + secondary). Triggers lazy init."""
     ensure_gemini_ready()
+    if not BACKENDS:
+        raise RuntimeError("Gemini backends failed to initialize. Check server logs for upload errors and GEMINI_API_KEY / GEMINI_API_KEY_2 env vars.")
     return list(BACKENDS)
 
 
@@ -204,9 +204,13 @@ def init_gemini_files():
 
 
 def ensure_gemini_ready():
-    """Lazy init: upload refs on first call, block concurrent callers until done."""
+    """Lazy init: upload refs on first call, block concurrent callers until done.
+
+    If init fails, resets state so a subsequent caller can retry. Only marks
+    init as done when BACKENDS has been successfully populated.
+    """
     global _init_started
-    if _init_done.is_set():
+    if _init_done.is_set() and BACKENDS:
         return
     should_init = False
     with _init_lock:
@@ -216,7 +220,12 @@ def ensure_gemini_ready():
     if should_init:
         try:
             init_gemini_files()
-        finally:
             _init_done.set()
+        except Exception as e:
+            # Reset state so next caller can retry; re-raise to surface the error
+            print(f"Gemini init failed: {e}")
+            with _init_lock:
+                _init_started = False
+            raise
     else:
-        _init_done.wait(timeout=120)
+        _init_done.wait(timeout=300)
