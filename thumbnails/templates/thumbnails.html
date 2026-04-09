@@ -387,6 +387,7 @@
     <h2 id="gridLabel">Select Your Favorites</h2>
     <div class="actions-bar">
       <span class="selected-count"><span id="selectedCount">0</span> selected</span>
+      <button class="btn btn-primary btn-sm" id="saveClearBtn" onclick="saveAndClear()" style="display:none;margin-left:12px;">💾 Save & Clear</button>
     </div>
   </div>
 
@@ -990,6 +991,12 @@ function pollStatus() {
       addedNew = true;
     }
 
+    // Show/hide Save & Clear button based on whether we have any thumbnails
+    const saveBtn = document.getElementById('saveClearBtn');
+    if (saveBtn) {
+      saveBtn.style.display = (data.images && data.images.length > 0) ? '' : 'none';
+    }
+
     // Auto-scroll to the newest group when new images arrive
     if (addedNew) {
       const container = document.getElementById('ideaGroupsContainer');
@@ -1157,6 +1164,96 @@ function downloadSelected() {
 function escHtml(s) {
   if (!s) return '';
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ---------- Save & Clear ----------
+
+async function saveAndClear() {
+  const count = allImages.length;
+  if (count === 0) {
+    alert('No thumbnails to save.');
+    return;
+  }
+  const msg = `Upload all ${count} thumbnails to Google Drive and clear the current generation?\n\nYour episode title, sources, and speakers will be kept so you can immediately start a new idea round.`;
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById('saveClearBtn');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Uploading...';
+
+  try {
+    const r = await fetch('/save_and_clear?session_id=' + SESSION_ID, { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      alert('Save failed: ' + (d.error || 'unknown error'));
+      return;
+    }
+    showSaveToast(d.folder_name, d.folder_url, d.file_count);
+    resetGeneratedState();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+function resetGeneratedState() {
+  // Clear DOM
+  document.getElementById('ideasList').innerHTML = '';
+  document.getElementById('ideaGroupsContainer').innerHTML = '';
+  document.getElementById('ideasCard').classList.add('hidden');
+  document.getElementById('gridCard').classList.add('hidden');
+
+  // Reset compute window
+  const logArea = document.getElementById('computeLog');
+  if (logArea) logArea.innerHTML = '';
+  const phase = document.getElementById('computePhase');
+  if (phase) phase.textContent = 'Idle';
+  const progressFill = document.getElementById('computeProgressFill');
+  if (progressFill) progressFill.style.width = '0%';
+  const progressText = document.getElementById('computeProgressText');
+  if (progressText) progressText.textContent = '';
+
+  // Clear in-memory state
+  allImages = [];
+  selected.clear();
+  ideas = [];
+  lastServerCost = 0;
+  clientSessionCost = 0;
+  updateCostDisplay(0);
+  updateSelectedUI();
+
+  // Hide the save button now that there's nothing to save
+  const saveBtn = document.getElementById('saveClearBtn');
+  if (saveBtn) saveBtn.style.display = 'none';
+
+  // Stop polling if active
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
+function showSaveToast(folderName, folderUrl, fileCount) {
+  // Remove any existing toast
+  const existing = document.getElementById('saveToast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'saveToast';
+  toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#16213e;border:2px solid #4ade80;border-radius:10px;padding:16px 40px 16px 20px;z-index:9999;max-width:420px;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
+  toast.innerHTML =
+    '<div style="color:#4ade80;font-weight:700;margin-bottom:6px;font-size:14px;">✓ Saved to Google Drive</div>' +
+    '<div style="color:#e0e0e0;font-size:13px;margin-bottom:10px;">' + escHtml(String(fileCount)) + ' files in <strong>' + escHtml(folderName) + '</strong></div>' +
+    '<a href="' + escHtml(folderUrl) + '" target="_blank" rel="noopener" style="color:#8fb2ff;text-decoration:underline;font-size:13px;font-weight:600;">Open folder in Drive →</a>' +
+    '<button onclick="document.getElementById(\'saveToast\').remove()" style="position:absolute;top:6px;right:10px;background:none;border:none;color:#888;cursor:pointer;font-size:18px;line-height:1;">×</button>';
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    const t = document.getElementById('saveToast');
+    if (t) t.remove();
+  }, 20000);
 }
 </script>
 <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>

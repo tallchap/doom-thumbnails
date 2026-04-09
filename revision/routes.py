@@ -11,7 +11,8 @@ from PIL import Image
 from auth import require_auth
 from config import GIT_VERSION, THUMBNAILS_DIR
 from shared.gemini_client import get_primary_backend, get_all_backends, upload_files_from_bytes
-from shared.helpers import parse_form_or_multipart
+from shared.drive_client import upload_episode_folder
+from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index
 from shared.state import get_session
 from thumbnails.generator import build_revision_prompts, run_generation
 from thumbnails.prompts import BORDER_PASS_PROMPT
@@ -119,3 +120,67 @@ def revise_upload():
         _st["log"].append(f"Requested attempts: {count}")
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})
+
+
+@revision_bp.route("/revision/save_and_clear", methods=["POST"])
+@require_auth
+def save_and_clear():
+    """Upload current revision results to Drive and clear generated state.
+
+    Keeps the user's base image, prompt text, reference attachments, and
+    count/border settings intact on the client side — we only touch server
+    session state here.
+    """
+    _st, _lk = _get_revision_session()
+    with _lk:
+        if _st.get("running"):
+            return jsonify({"error": "Cannot save — generation in progress"})
+        images = list(_st.get("images", []))
+        ideas = list(_st.get("ideas", []))
+
+    if not images:
+        return jsonify({"error": "Nothing to save — no results in session"})
+
+    base_name = f"revision-{datetime.date.today().isoformat()}"
+
+    # All revision results live under idea_idx=0 by convention. Sort by idx and
+    # assign letters a, b, c, ..., z, aa, ab, ...
+    imgs_sorted = sorted(
+        [img for img in images if os.path.isfile(img.get("path", ""))],
+        key=lambda x: x.get("idx", 0),
+    )
+    upload_list = []
+    for letter_idx, img in enumerate(imgs_sorted):
+        letter = letter_for_index(letter_idx)
+        filename = f"idea1{letter}.png"
+        upload_list.append((filename, img["path"]))
+
+    if not upload_list:
+        return jsonify({"error": "All result files are missing from disk"})
+
+    lines = [
+        f"Revision folder: {base_name}",
+        f"Saved:           {datetime.datetime.now().isoformat(timespec='seconds')}",
+        "",
+        "Revision prompt(s):",
+    ]
+    for i, idea_text in enumerate(ideas, 1):
+        lines.append(f"{i}. {idea_text}")
+    text = "\n".join(lines) + "\n"
+
+    try:
+        result = upload_episode_folder(base_name, text, upload_list)
+    except Exception as e:
+        return jsonify({"error": f"Drive upload failed: {str(e)[:250]}"})
+
+    reset_generation_state(_st, _lk)
+
+    session_id = request.args.get("session_id") or "default"
+    print(f"[REVISION] save_and_clear | session={session_id} | folder={result['folder_name']} | files={result['file_count']}")
+
+    return jsonify({
+        "ok": True,
+        "folder_name": result["folder_name"],
+        "folder_url": result["folder_url"],
+        "file_count": result["file_count"],
+    })

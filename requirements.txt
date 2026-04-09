@@ -1,6 +1,7 @@
 flask
 gunicorn
 google-genai
+google-api-python-client
 python-dotenv
 Pillow
 requests

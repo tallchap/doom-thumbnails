@@ -15,7 +15,8 @@ from config import (
     APP_MODE, BRAVE_API_KEY, GIT_VERSION, THUMBNAILS_DIR,
 )
 from shared.gemini_client import get_primary_backend, get_all_backends, upload_files_from_bytes
-from shared.helpers import parse_form_or_multipart
+from shared.drive_client import upload_episode_folder
+from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index
 from shared.state import get_session
 from thumbnails.brave_search import search_images_brave, download_image_bytes
 from thumbnails.generator import (
@@ -552,6 +553,85 @@ def save_finals():
             shutil.copy2(img_info["path"], dest)
 
     return jsonify({"ok": True, "count": count, "finals_dir": finals_dir})
+
+
+@thumbnails_bp.route("/save_and_clear", methods=["POST"])
+@require_auth
+def save_and_clear():
+    """Upload the current session's thumbnails to Google Drive and clear generated state.
+
+    Keeps user inputs (title, speakers, sources) so the user can immediately generate
+    a new set of ideas/thumbnails without re-uploading anything.
+    """
+    _st, _lk = _get_session()
+    with _lk:
+        if _st.get("running"):
+            return jsonify({"error": "Cannot save — generation in progress"})
+        images = list(_st.get("images", []))
+        ideas = list(_st.get("ideas", []))
+        episode_dir = _st.get("episode_dir", "")
+
+    if not images:
+        return jsonify({"error": "Nothing to save — no thumbnails in session"})
+
+    # Folder name: reuse the episode_dir basename (already {slug}-{date}) or fallback
+    if episode_dir:
+        base_name = os.path.basename(episode_dir.rstrip("/"))
+    else:
+        base_name = f"thumbnails-{datetime.date.today().isoformat()}"
+
+    # Group images by idea_idx, sort each group by idx, assign letters
+    by_idea = {}
+    for img in images:
+        if not os.path.isfile(img.get("path", "")):
+            continue
+        by_idea.setdefault(img.get("idea_idx", -1), []).append(img)
+
+    upload_list = []
+    for idea_idx in sorted(by_idea.keys()):
+        imgs_sorted = sorted(by_idea[idea_idx], key=lambda x: x.get("idx", 0))
+        for letter_idx, img in enumerate(imgs_sorted):
+            letter = letter_for_index(letter_idx)
+            if idea_idx < 0:
+                # Variations without an explicit idea idx (e.g. /vary output)
+                display = "var"
+            else:
+                display = str(idea_idx + 1)
+            filename = f"idea{display}{letter}.png"
+            upload_list.append((filename, img["path"]))
+
+    if not upload_list:
+        return jsonify({"error": "All thumbnail files are missing from disk"})
+
+    # Build ideas.txt content
+    lines = [
+        f"Episode folder: {base_name}",
+        f"Saved:          {datetime.datetime.now().isoformat(timespec='seconds')}",
+        "",
+        "Ideas:",
+    ]
+    for i, idea_text in enumerate(ideas, 1):
+        lines.append(f"{i}. {idea_text}")
+    text = "\n".join(lines) + "\n"
+
+    # Upload
+    try:
+        result = upload_episode_folder(base_name, text, upload_list)
+    except Exception as e:
+        return jsonify({"error": f"Drive upload failed: {str(e)[:250]}"})
+
+    # Clear generated state; keep speakers/sources/user inputs
+    reset_generation_state(_st, _lk)
+
+    session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
+    print(f"[THUMB] save_and_clear | session={session_id} | folder={result['folder_name']} | files={result['file_count']}")
+
+    return jsonify({
+        "ok": True,
+        "folder_name": result["folder_name"],
+        "folder_url": result["folder_url"],
+        "file_count": result["file_count"],
+    })
 
 
 @thumbnails_bp.route("/open_folder")

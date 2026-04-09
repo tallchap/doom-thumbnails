@@ -9,6 +9,10 @@ services:
         sync: false
       - key: GEMINI_API_KEY_2
         sync: false
+      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
+        sync: false
+      - key: DOOM_DRIVE_PARENT_FOLDER_ID
+        sync: false
       - key: APP_PASSWORD
         sync: false
       - key: BRAVE_API_KEY

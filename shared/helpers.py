@@ -105,6 +105,46 @@ def parse_multipart(headers, body):
     return fields, files
 
 
+def reset_generation_state(st, lock):
+    """Clear the generated-output keys of a session dict, keeping user inputs.
+
+    Used by /save_and_clear endpoints on both the main thumbnails page and the
+    /revision page. After calling this, the user's episode title, custom prompt,
+    transcript, speaker photos, source images, base image, etc. are still intact —
+    only the ideas list, thumbnails, logs, and round counters are cleared.
+    """
+    with lock:
+        st["ideas"] = []
+        st["images"] = []
+        st["idea_groups"] = {}
+        st["episode_dir"] = ""
+        st["round_num"] = 0
+        st["running"] = False
+        st["phase"] = "idle"
+        st["total"] = 0
+        st["completed"] = 0
+        st["errors"] = 0
+        st["log"] = []
+        st["done"] = False
+        st["output_dir"] = ""
+        st["cost"] = 0.0
+        st["cancel_requested"] = False
+
+
+def letter_for_index(i):
+    """Convert 0-indexed variation number to letter(s): 0->a, 25->z, 26->aa, 27->ab, ..."""
+    if i < 0:
+        return "x"
+    result = ""
+    n = i
+    while True:
+        result = chr(ord("a") + (n % 26)) + result
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return result
+
+
 def parse_form_or_multipart(request):
     """Parse Flask request body as either multipart/form-data or url-encoded.
     Returns (fields_dict, files_dict)."""

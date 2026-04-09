@@ -88,6 +88,7 @@
       </label>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
       <button id="cancelBtn" class="btn" style="background:#ef4444;display:none;" onclick="cancelGeneration()">Cancel</button>
+      <button id="saveClearBtn" class="btn" style="background:#4ade80;display:none;" onclick="saveAndClear()">💾 Save & Clear</button>
     </div>
     <div id="statusText" class="status"></div>
   </div>
@@ -594,6 +595,14 @@ function startPolling() {
       const runCost = (typeof d.cost === 'number') ? d.cost : 0;
       const sessionCost = (typeof d.session_cost === 'number') ? d.session_cost : 0;
       document.getElementById('costText').textContent = `API spend — run: $${runCost.toFixed(2)} | session: $${sessionCost.toFixed(2)}`;
+
+      // Show Save & Clear when there's at least one result and not actively generating
+      const saveBtn = document.getElementById('saveClearBtn');
+      if (saveBtn) {
+        const hasImages = (d.images && d.images.length > 0);
+        saveBtn.style.display = (hasImages && !d.running) ? '' : 'none';
+      }
+
       if (d.done && !d.running) {
         clearInterval(pollInterval);
         pollInterval = null;
@@ -601,6 +610,84 @@ function startPolling() {
       }
     } catch (_) {}
   }, 1000);
+}
+
+// ---------- Save & Clear ----------
+
+async function saveAndClear() {
+  const count = seen.size;
+  if (count === 0) {
+    alert('No results to save.');
+    return;
+  }
+  const msg = `Upload all ${count} results to Google Drive and clear the current generation?\n\nYour base image, prompt, and reference attachments will be kept so you can immediately start another run.`;
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById('saveClearBtn');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Uploading...';
+
+  try {
+    const r = await fetch('/revision/save_and_clear?session_id=' + SESSION_ID, { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      alert('Save failed: ' + (d.error || 'unknown error'));
+      return;
+    }
+    showSaveToast(d.folder_name, d.folder_url, d.file_count);
+    resetGeneratedState();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+function resetGeneratedState() {
+  // Clear DOM
+  document.getElementById('resultsGrid').innerHTML = '';
+  document.getElementById('logBox').innerHTML = '';
+  document.getElementById('costText').textContent = '';
+  document.getElementById('statusText').textContent = '';
+
+  // Reset in-memory tracking
+  seen = new Set();
+  activeOutputDir = '';
+  followUpBasePath = '';
+
+  // Hide the save button
+  const saveBtn = document.getElementById('saveClearBtn');
+  if (saveBtn) saveBtn.style.display = 'none';
+
+  // KEEP: baseAttachmentFile, pastedImages, attachedImages (so basePreview + refsPreview stay)
+  // KEEP: feedback textarea, genCount, addBorderCheck
+
+  // Stop any active polling (a new Generate will restart it)
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
+function showSaveToast(folderName, folderUrl, fileCount) {
+  const existing = document.getElementById('saveToast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'saveToast';
+  toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#16213e;border:2px solid #4ade80;border-radius:10px;padding:16px 40px 16px 20px;z-index:9999;max-width:420px;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
+  toast.innerHTML =
+    '<div style="color:#4ade80;font-weight:700;margin-bottom:6px;font-size:14px;">✓ Saved to Google Drive</div>' +
+    '<div style="color:#e0e0e0;font-size:13px;margin-bottom:10px;">' + esc(String(fileCount)) + ' files in <strong>' + esc(folderName) + '</strong></div>' +
+    '<a href="' + esc(folderUrl) + '" target="_blank" rel="noopener" style="color:#8fb2ff;text-decoration:underline;font-size:13px;font-weight:600;">Open folder in Drive →</a>' +
+    '<button onclick="document.getElementById(\'saveToast\').remove()" style="position:absolute;top:6px;right:10px;background:none;border:none;color:#888;cursor:pointer;font-size:18px;line-height:1;">×</button>';
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    const t = document.getElementById('saveToast');
+    if (t) t.remove();
+  }, 20000);
 }
 
 renderAttachmentsPreview();
