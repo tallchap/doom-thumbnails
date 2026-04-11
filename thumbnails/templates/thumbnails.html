@@ -932,13 +932,32 @@ function showComputeWindow() {
 }
 
 // ----- Polling -----
+let generationStartedAt = 0;
+
 function startPolling() {
   if (pollInterval) clearInterval(pollInterval);
+  generationStartedAt = Date.now();
   pollInterval = setInterval(pollStatus, 500);
 }
 
 function pollStatus() {
   fetch('/status?session_id=' + SESSION_ID).then(r => r.json()).then(data => {
+    // Detect stale/dead session: server restarted and lost state
+    if (!data.running && !data.done && data.total === 0 && generationStartedAt > 0) {
+      const elapsed = Date.now() - generationStartedAt;
+      if (elapsed > 30000) {
+        clearInterval(pollInterval);
+        generationStartedAt = 0;
+        document.getElementById('computePhase').textContent = 'Connection lost — server may have restarted';
+        document.getElementById('computeTitle').textContent = 'Computation — Error';
+        document.getElementById('computeDot').classList.remove('active');
+        setRiffButtonsDisabled(false);
+        var btn = document.getElementById('genThumbsBtn');
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Generate Thumbnails (3 per idea)'; }
+        return;
+      }
+    }
+
     const doneCount = data.completed + data.errors;
     const pct = data.total > 0 ? (doneCount / data.total * 100) : 0;
 

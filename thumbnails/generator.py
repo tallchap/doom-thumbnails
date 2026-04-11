@@ -474,10 +474,8 @@ def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", 
         _st["output_dir"] = output_dir
 
     def _run():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         try:
-            results = loop.run_until_complete(
+            results = asyncio.run(
                 generate_batch(backend, prompts, output_dir, phase, target_status=_st, target_lock=_lk)
             )
             with _lk:
@@ -495,7 +493,6 @@ def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", 
                 # Cap log to prevent unbounded memory growth
                 if len(_st["log"]) > MAX_LOG_ENTRIES:
                     _st["log"] = _st["log"][-MAX_LOG_ENTRIES:]
-            loop.close()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
