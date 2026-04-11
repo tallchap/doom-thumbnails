@@ -8,6 +8,7 @@ import os
 import random
 import threading
 
+from google import genai
 from google.genai import types
 from PIL import Image
 
@@ -264,7 +265,7 @@ def build_revision_prompts(backends, selected_images, speaker_refs_by_backend, c
 # ----- Async Generation -----
 
 
-async def apply_border_pass(backend: GeminiBackend, img_data, prompt_override=None, target_status=None, target_lock=None):
+async def apply_border_pass(backend: GeminiBackend, img_data, prompt_override=None, target_status=None, target_lock=None, client_override=None):
     """Second Gemini pass: add red border + DOOM DEBATES wordmark."""
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -275,8 +276,9 @@ async def apply_border_pass(backend: GeminiBackend, img_data, prompt_override=No
         source_img = Image.open(io.BytesIO(img_data)).convert("RGB")
         border_contents = list(backend.border_ref_files) + [source_img, prompt_text]
         _record_api_call(GEMINI_MODEL, border_contents, phase="border_pass", key="last_border_api_call", target_status=_st, target_lock=_lk)
+        api_client = client_override or backend.client
         response = await asyncio.wait_for(
-            backend.client.aio.models.generate_content(
+            api_client.aio.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=border_contents,
                 config=types.GenerateContentConfig(
@@ -314,6 +316,15 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
     with _lk:
         start_idx = len(_st["images"])
 
+    # Create fresh genai.Client instances bound to THIS event loop's async context.
+    # The singleton clients from gemini_client.py have httpx.AsyncClient objects that
+    # bind to the main thread's event loop at init time, causing "Event loop is closed"
+    # when used from a background thread's asyncio.run().
+    from shared.gemini_client import get_all_backends
+    _local_clients = {}
+    for b in get_all_backends():
+        _local_clients[b.name] = genai.Client(api_key=b.client._api_client.api_key)
+
     # Mutable, shared across all concurrent generate_one tasks. On 429, one task
     # may swap this to the fallback backend; all subsequent tasks pick up the new backend.
     current_backend_ref = [backend]
@@ -347,8 +358,9 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                     return None
                 try:
                     _record_api_call(GEMINI_MODEL, contents, phase=phase, target_status=_st, target_lock=_lk)
+                    local_client = _local_clients[cur_backend.name]
                     response = await asyncio.wait_for(
-                        cur_backend.client.aio.models.generate_content(
+                        local_client.aio.models.generate_content(
                             model=GEMINI_MODEL,
                             contents=contents,
                             config=types.GenerateContentConfig(
@@ -370,7 +382,7 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                                 if _st.get("add_border") and cur_backend.border_ref_files:
                                     with _lk:
                                         _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
-                                    border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk)
+                                    border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk, client_override=local_client)
                                     if border_result:
                                         img_data = border_result
                                         with _lk:
