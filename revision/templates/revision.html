@@ -614,35 +614,20 @@ function startPolling() {
 
 // ---------- Save & Clear ----------
 
-async function saveAndClear() {
+function saveAndClear() {
   const count = seen.size;
   if (count === 0) {
     alert('No results to save.');
     return;
   }
-  const msg = `Upload all ${count} results to Google Drive and clear the current generation?\n\nYour base image, prompt, and reference attachments will be kept so you can immediately start another run.`;
+  const msg = `Upload all ${count} results to Google Drive and clear the current generation?\n\nUI clears immediately; upload continues in background. Success or failure will appear in the log panel.`;
   if (!confirm(msg)) return;
 
-  const btn = document.getElementById('saveClearBtn');
-  const origText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⏳ Uploading...';
+  // Fire-and-forget — don't await Drive upload
+  fetch('/revision/save_and_clear?session_id=' + SESSION_ID, { method: 'POST' }).catch(() => {});
 
-  try {
-    const r = await fetch('/revision/save_and_clear?session_id=' + SESSION_ID, { method: 'POST' });
-    const d = await r.json();
-    if (!d.ok) {
-      alert('Save failed: ' + (d.error || 'unknown error'));
-      return;
-    }
-    showSaveToast(d.folder_name, d.folder_url, d.file_count);
-    resetGeneratedState();
-  } catch (e) {
-    alert('Save failed: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = origText;
-  }
+  // Clear UI immediately
+  resetGeneratedState();
 }
 
 function resetGeneratedState() {

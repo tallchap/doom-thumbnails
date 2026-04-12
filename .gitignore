@@ -43,3 +43,4 @@ __pycache__/
 # Format app (Next.js sub-service)
 !format-app/
 !format-app/**
+.gstack/

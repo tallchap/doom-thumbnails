@@ -4,6 +4,7 @@ import datetime
 import io
 import json
 import os
+import threading
 
 from flask import Blueprint, jsonify, render_template, request
 from PIL import Image
@@ -168,19 +169,20 @@ def save_and_clear():
         lines.append(f"{i}. {idea_text}")
     text = "\n".join(lines) + "\n"
 
-    try:
-        result = upload_episode_folder(base_name, text, upload_list)
-    except Exception as e:
-        return jsonify({"error": f"Drive upload failed: {str(e)[:250]}"})
-
-    reset_generation_state(_st, _lk)
-
     session_id = request.args.get("session_id") or "default"
-    print(f"[REVISION] save_and_clear | session={session_id} | folder={result['folder_name']} | files={result['file_count']}")
 
-    return jsonify({
-        "ok": True,
-        "folder_name": result["folder_name"],
-        "folder_url": result["folder_url"],
-        "file_count": result["file_count"],
-    })
+    def _bg():
+        try:
+            result = upload_episode_folder(base_name, text, upload_list)
+            status = f"✓ Saved to Drive: {result['folder_name']} ({result['file_count']} files) — {result['folder_url']}"
+            print(f"[REVISION] save_and_clear | session={session_id} | folder={result['folder_name']} | files={result['file_count']}")
+        except Exception as e:
+            status = f"✗ Drive save failed: {str(e)[:200]}"
+            print(f"[REVISION] save_and_clear FAILED | session={session_id} | {e}")
+        finally:
+            reset_generation_state(_st, _lk)
+            with _lk:
+                _st["log"].append(status)
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return jsonify({"ok": True})

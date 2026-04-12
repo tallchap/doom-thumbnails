@@ -1187,35 +1187,20 @@ function escHtml(s) {
 
 // ---------- Save & Clear ----------
 
-async function saveAndClear() {
+function saveAndClear() {
   const count = allImages.length;
   if (count === 0) {
     alert('No thumbnails to save.');
     return;
   }
-  const msg = `Upload all ${count} thumbnails to Google Drive and clear the current generation?\n\nYour episode title, sources, and speakers will be kept so you can immediately start a new idea round.`;
+  const msg = `Upload all ${count} thumbnails to Google Drive and clear the current generation?\n\nUI clears immediately; upload continues in background. Success or failure will appear in the compute log.`;
   if (!confirm(msg)) return;
 
-  const btn = document.getElementById('saveClearBtn');
-  const origText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⏳ Uploading...';
+  // Fire-and-forget — don't await Drive upload
+  fetch('/save_and_clear?session_id=' + SESSION_ID, { method: 'POST' }).catch(() => {});
 
-  try {
-    const r = await fetch('/save_and_clear?session_id=' + SESSION_ID, { method: 'POST' });
-    const d = await r.json();
-    if (!d.ok) {
-      alert('Save failed: ' + (d.error || 'unknown error'));
-      return;
-    }
-    showSaveToast(d.folder_name, d.folder_url, d.file_count);
-    resetGeneratedState();
-  } catch (e) {
-    alert('Save failed: ' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = origText;
-  }
+  // Clear UI immediately
+  resetGeneratedState();
 }
 
 function resetGeneratedState() {
