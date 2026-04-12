@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 from flask import Blueprint, jsonify, render_template, request, send_file, Response
 from PIL import Image
@@ -60,6 +61,31 @@ def index():
 @require_auth
 def get_status():
     _st, _lk = _get_session()
+
+    # Long-poll: hold the request open while nothing changes, up to ~25s.
+    # This keeps continuous HTTP activity during generation so Cloud Run
+    # allocates CPU to the background generator thread. (On always-on
+    # hosts like Render, this has no ill effect — polls just arrive less
+    # frequently.) Breaks immediately when any progress field changes.
+    def _snapshot():
+        with _lk:
+            return (
+                _st.get("completed", 0),
+                _st.get("errors", 0),
+                _st.get("phase", "idle"),
+                _st.get("done", False),
+                _st.get("running", False),
+                len(_st.get("images", [])),
+                len(_st.get("ideas", [])),
+            )
+
+    initial = _snapshot()
+    deadline = time.time() + 25.0
+    while time.time() < deadline:
+        if _snapshot() != initial:
+            break
+        time.sleep(0.4)
+
     try:
         with _lk:
             safe = {
