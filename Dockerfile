@@ -18,4 +18,4 @@ ENV NO_BROWSER=1 \
     PYTHONUNBUFFERED=1
 
 CMD exec gunicorn --bind 0.0.0.0:${PORT:-8080} --timeout 300 \
-    --worker-class gthread --threads 4 "app:create_app()"
+    --worker-class gthread --threads 32 "app:create_app()"
