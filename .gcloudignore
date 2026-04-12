@@ -1,0 +1,31 @@
+# Include everything except these
+.git/
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.env
+.env.local
+node_modules/
+
+# Runtime output (generated episode folders)
+thumbnails/*-*/
+captures/
+face_capture/captures/
+
+# Local dev
+.DS_Store
+.vscode/
+.idea/
+
+# Render-specific (keep in repo but don't ship to container)
+render.yaml
+Procfile
+
+# Node app (separate deploy)
+format-app/

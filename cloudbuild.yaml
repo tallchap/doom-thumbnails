@@ -1,0 +1,27 @@
+# Cloud Build config for auto-deploy from GitHub main branch.
+# Trigger created via: gcloud builds triggers create github ...
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/doom-thumbnails/doom-thumbnails:$COMMIT_SHA"
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/doom-thumbnails/doom-thumbnails:latest"
+      - "."
+  - name: gcr.io/cloud-builders/docker
+    args: [push, "us-central1-docker.pkg.dev/$PROJECT_ID/doom-thumbnails/doom-thumbnails:$COMMIT_SHA"]
+  - name: gcr.io/cloud-builders/docker
+    args: [push, "us-central1-docker.pkg.dev/$PROJECT_ID/doom-thumbnails/doom-thumbnails:latest"]
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - doom-thumbnails
+      - --image=us-central1-docker.pkg.dev/$PROJECT_ID/doom-thumbnails/doom-thumbnails:$COMMIT_SHA
+      - --region=us-central1
+      - --platform=managed
+
+options:
+  logging: CLOUD_LOGGING_ONLY

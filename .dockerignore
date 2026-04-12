@@ -1,0 +1,29 @@
+.git
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+.env.local
+node_modules/
+
+# Runtime output dirs (generated episode folders — not the Flask blueprint)
+thumbnails/*-*/
+captures/
+face_capture/captures/
+
+# Local dev
+.DS_Store
+.vscode/
+.idea/
+
+# Docs that don't belong in container
+README.md
