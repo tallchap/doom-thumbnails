@@ -285,7 +285,7 @@ def generate_from_ideas():
     except json.JSONDecodeError:
         source_urls = []
 
-    for url in source_urls[:15]:
+    for url in source_urls[:10]:
         img_bytes = download_image_bytes(url)
         if img_bytes:
             extra = upload_files_from_bytes([img_bytes], "web_source")
