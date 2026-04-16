@@ -11,6 +11,9 @@ load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
 
 
 def _get_git_version():
+    env_version = os.environ.get("GIT_VERSION", "").strip()
+    if env_version:
+        return env_version
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],

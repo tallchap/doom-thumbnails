@@ -9,6 +9,7 @@
 !requirements.txt
 !Procfile
 !render.yaml
+!deploy-cloudrun.sh
 
 # Modular Flask structure
 !shared/
