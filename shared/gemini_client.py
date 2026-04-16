@@ -6,6 +6,7 @@ API key and holds its own File API upload handles (which are per-key scoped).
 
 import os
 import sys
+import time
 import threading
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -30,6 +31,8 @@ BACKENDS: List[GeminiBackend] = []
 _init_done = threading.Event()
 _init_started = False
 _init_lock = threading.Lock()
+_last_init_time: float = 0
+_FILE_API_TTL_SECONDS = 40 * 3600  # Re-upload before 48h Gemini File API expiry
 
 
 def _build_backends() -> List[GeminiBackend]:
@@ -206,12 +209,18 @@ def init_gemini_files():
 def ensure_gemini_ready():
     """Lazy init: upload refs on first call, block concurrent callers until done.
 
+    Re-uploads when File API refs approach their 48h TTL (checked at 40h).
     If init fails, resets state so a subsequent caller can retry. Only marks
     init as done when BACKENDS has been successfully populated.
     """
-    global _init_started
+    global _init_started, _last_init_time
     if _init_done.is_set() and BACKENDS:
-        return
+        if time.time() - _last_init_time < _FILE_API_TTL_SECONDS:
+            return
+        print(f"Gemini File API refs are {(time.time() - _last_init_time) / 3600:.1f}h old — re-uploading before 48h expiry")
+        with _init_lock:
+            _init_started = False
+            _init_done.clear()
     should_init = False
     with _init_lock:
         if not _init_started:
@@ -220,9 +229,9 @@ def ensure_gemini_ready():
     if should_init:
         try:
             init_gemini_files()
+            _last_init_time = time.time()
             _init_done.set()
         except Exception as e:
-            # Reset state so next caller can retry; re-raise to surface the error
             print(f"Gemini init failed: {e}")
             with _init_lock:
                 _init_started = False
