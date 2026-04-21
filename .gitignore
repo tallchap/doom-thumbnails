@@ -38,9 +38,6 @@ __pycache__/
 # Docs
 !FACE_CAPTURE_CONTEXT.md
 
-# Legacy monolith (kept for reference)
-!thumbnail_gen.py
-
 # Format app (Next.js sub-service)
 !format-app/
 !format-app/**

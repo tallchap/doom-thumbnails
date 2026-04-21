@@ -6,14 +6,17 @@ import io
 import json
 import os
 import random
+import re
 import threading
 
+import requests
 from google import genai
 from google.genai import types
 from PIL import Image
 
 from config import (
-    GEMINI_MODEL, TEXT_MODEL, THUMBNAILS_DIR, MAX_CONCURRENT, COST_PER_IMAGE,
+    GEMINI_MODEL, TEXT_MODEL, CLAUDE_IDEA_MODEL, ANTHROPIC_API_KEY,
+    THUMBNAILS_DIR, MAX_CONCURRENT, COST_PER_IMAGE,
     MAX_BRAND_REFS_PER_CALL, MAX_SPEAKER_REFS_PER_CALL, MAX_LIRON_REFS_PER_CALL,
 )
 from shared.gemini_client import GeminiBackend, get_fallback_backend
@@ -42,9 +45,12 @@ def _parse_json_array(text):
 
 
 def generate_ideas(client, title, custom_prompt, transcript, additional_instructions):
-    """Use Gemini text model to generate 10 thumbnail ideas. Returns list of strings."""
+    """Use Claude Opus 4.7 to generate 10 thumbnail ideas. Returns list of strings.
+
+    The `client` arg is a Gemini client kept for call-site compatibility — not used here.
+    """
     custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
-    transcript_section = f"EPISODE TRANSCRIPT (excerpt):\n{transcript[:1500]}" if transcript else ""
+    transcript_section = f"EPISODE TRANSCRIPT (full):\n{transcript}" if transcript else ""
     addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
 
     prompt = IDEA_GENERATION_PROMPT.format(
@@ -53,9 +59,27 @@ def generate_ideas(client, title, custom_prompt, transcript, additional_instruct
         transcript_section=transcript_section,
         additional_instructions=addl,
     )
-    _record_api_call(TEXT_MODEL, prompt, phase="idea_generation")
-    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
-    text = response.text.strip()
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY not set — required for thumbnail idea generation")
+    _record_api_call(CLAUDE_IDEA_MODEL, prompt, phase="idea_generation")
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": CLAUDE_IDEA_MODEL,
+            "max_tokens": 2000,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=180,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    parts = data.get("content", [])
+    text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return _parse_json_array(text)
@@ -221,35 +245,128 @@ def build_variation_prompts(backends, selected_images, speaker_refs_by_backend, 
     return prompts
 
 
+TAG_RE = re.compile(r"\[tag:\s*([a-z0-9_-]+)\s*\]", re.IGNORECASE)
+LIRON_TAG_REPLACEMENT = (
+    "Liron (whose reference photos are enclosed below, "
+    "see 'LIRON REFERENCE PHOTOS')"
+)
+
+# Revision reliability (Phase 2): temperature jitter across retry attempts.
+REVISION_TEMPS = [0.8, 1.0, 1.2, 1.4, 0.6, 1.5, 0.9, 1.1, 1.3, 0.7]
+REVISION_MAX_ATTEMPTS = 30
+
+
+def _diagnose_no_image(response):
+    """Extract Gemini refusal metadata when no image part was returned."""
+    info = {"finish_reason": None, "block_reason": None,
+            "safety": None, "text_parts": []}
+    try:
+        if response.candidates:
+            info["finish_reason"] = str(getattr(response.candidates[0], "finish_reason", None))
+            for p in (response.candidates[0].content.parts or []):
+                t = getattr(p, "text", None)
+                if t:
+                    info["text_parts"].append(t[:500])
+        pf = getattr(response, "prompt_feedback", None)
+        if pf:
+            info["block_reason"] = str(getattr(pf, "block_reason", None))
+            sr = getattr(pf, "safety_ratings", None)
+            if sr:
+                info["safety"] = [str(r) for r in sr]
+    except Exception as e:
+        info["diagnosis_error"] = str(e)
+    return info
+
+
+def _perturb_contents(contents, level):
+    """Strip parts from a revision contents array to reduce safety-block surface.
+
+    Level 0: no change (attempts 1-10).
+    Level 1 (attempts 11-20): drop all brand reference Files (display_name
+        prefix "brand_"). Brand refs contain people and are the most common
+        safety trigger on Gemini image gen.
+    Level 2 (attempts 21-30): L1 plus drop the REVISION_CONTEXT_PROMPT text
+        block — reduces prompt size to bare essentials.
+    """
+    if level <= 0:
+        return list(contents)
+    from thumbnails.prompts import REVISION_CONTEXT_PROMPT
+    ctx_prefix = REVISION_CONTEXT_PROMPT[:60]
+    out = []
+    for c in contents:
+        dn = getattr(c, "display_name", None)
+        if level >= 1 and isinstance(dn, str) and dn.startswith("brand_"):
+            continue
+        if level >= 2 and isinstance(c, str) and c.startswith(ctx_prefix):
+            continue
+        out.append(c)
+    return out
+
+
+def _rewrite_liron_tags(prompt):
+    """Replace every [tag: liron] with the verbose inline form.
+
+    Returns (rewritten_prompt, had_liron_tag). Non-liron tags are left
+    verbatim and logged as unknown.
+    """
+    had = False
+
+    def sub(m):
+        nonlocal had
+        name = m.group(1).lower()
+        if name == "liron":
+            had = True
+            return LIRON_TAG_REPLACEMENT
+        print(f"[REVISION] unknown tag: {name}")
+        return m.group(0)
+
+    return TAG_RE.sub(sub, prompt or ""), had
+
+
 def build_revision_prompts(backends, selected_images, speaker_refs_by_backend, custom_prompt, count_per=3, idea_idx=-1, attachment_refs_by_backend=None, context_prompt=None):
-    """Build revision prompts with custom instructions."""
+    """Build revision prompts with custom instructions.
+
+    Liron refs are only attached when the prompt contains an explicit
+    [tag: liron] marker. The tag is rewritten inline to a verbose
+    natural-language phrase pointing at the LIRON REFERENCE PHOTOS block.
+    """
     prompts = []
-    mentions_liron = "liron" in (custom_prompt or "").lower()
+    rewritten, had_liron_tag = _rewrite_liron_tags(custom_prompt)
+    if had_liron_tag:
+        print("[REVISION] [tag: liron] detected — attaching Liron reference photos")
 
     for img in selected_images:
         for v in range(count_per):
             contents_by_backend = {}
             for backend in backends:
-                selected_liron_refs = _select_identity_refs(backend.liron_files, MAX_LIRON_REFS_PER_CALL) if mentions_liron else []
+                liron_refs = (
+                    _select_identity_refs(backend.liron_files, MAX_LIRON_REFS_PER_CALL)
+                    if had_liron_tag else []
+                )
                 attachment_refs = _refs_for_backend(backend, attachment_refs_by_backend)
 
+                prompt_for_model = rewritten
+                if had_liron_tag and not liron_refs:
+                    print("[REVISION] [tag: liron] present but no Liron refs uploaded — stripping inline reference")
+                    prompt_for_model = rewritten.replace(LIRON_TAG_REPLACEMENT, "Liron")
+
                 prompt_text = REVISION_PROMPT.format(
-                    custom_prompt=custom_prompt,
+                    custom_prompt=prompt_for_model,
                     variation_seed=v + 1,
                     variation_total=count_per,
                 )
                 contents = [prompt_text, img]
-                if selected_liron_refs:
+
+                if liron_refs:
                     contents.append(
-                        "In this image, you must make one of the faces look like Liron Shapira. "
-                        "Liron Shapira looks like the following enclosed images:"
+                        "=== LIRON REFERENCE PHOTOS === "
+                        "The person referred to as 'Liron' in the instructions above "
+                        "MUST be a faithful likeness of the person in the following photos — "
+                        "same facial structure, nose, eyes, beard shape, skin tone. "
+                        "Do NOT generate a generic man's face. Copy this exact likeness."
                     )
-                    contents.extend(selected_liron_refs)
-                    contents.append(
-                        "The face of Liron in your output MUST be a faithful reproduction of the person in the above photos — "
-                        "same facial structure, same nose, same eyes, same beard shape, same skin tone. "
-                        "Do NOT generate a generic man's face. Do NOT invent features. Copy Liron's exact likeness."
-                    )
+                    contents.extend(liron_refs)
+
                 contents.append(context_prompt or REVISION_CONTEXT_PROMPT)
                 brand_sample = _select_brand_refs(backend)
                 if brand_sample:
@@ -302,12 +419,17 @@ async def apply_border_pass(backend: GeminiBackend, img_data, prompt_override=No
     return None
 
 
-async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
+async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None, revision_mode=False, judge_fn=None):
     """Fire parallel Gemini API calls and save results.
 
     prompts is a list of (idea_idx, variation_num, contents_by_backend) where
     contents_by_backend is {backend_name: [contents]} — one contents list per backend.
     On 429 from primary, the batch swaps its current backend to secondary.
+
+    When `revision_mode=True`: each slot gets up to REVISION_MAX_ATTEMPTS
+    tries with temperature jitter + progressive prompt perturbation, and
+    (if `judge_fn` is provided) the produced image must pass the judge
+    before it's accepted. First judge-matching image wins for that slot.
     """
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -348,7 +470,12 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                 if _st.get("cancel_requested"):
                     _st["log"].append(f"thumb_{idx:03d}: cancelled")
                     return None
-            for attempt in range(3):
+            attempt_cap = REVISION_MAX_ATTEMPTS if revision_mode else 3
+            for attempt in range(attempt_cap):
+                with _lk:
+                    if _st.get("cancel_requested"):
+                        _st["log"].append(f"thumb_{idx:03d}: cancelled")
+                        return None
                 cur_backend = current_backend_ref[0]
                 contents = contents_by_backend.get(cur_backend.name)
                 if contents is None:
@@ -356,87 +483,149 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                         _st["errors"] += 1
                         _st["log"].append(f"thumb_{idx:03d}: no contents for backend {cur_backend.name}")
                     return None
+
+                # Revision mode: temperature jitter + prompt perturbation schedule.
+                if revision_mode:
+                    temp = REVISION_TEMPS[attempt % len(REVISION_TEMPS)]
+                    pert_level = 0 if attempt < 10 else (1 if attempt < 20 else 2)
+                    attempt_contents = _perturb_contents(contents, pert_level)
+                    config = types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=types.ImageConfig(aspect_ratio="16:9"),
+                        temperature=temp,
+                    )
+                    with _lk:
+                        _st["log"].append(
+                            f"thumb_{idx:03d}: attempt {attempt+1}/{attempt_cap} temp={temp} pert=L{pert_level}"
+                        )
+                else:
+                    attempt_contents = contents
+                    config = types.GenerateContentConfig(
+                        response_modalities=["IMAGE"],
+                        image_config=types.ImageConfig(aspect_ratio="16:9"),
+                    )
+
                 try:
-                    _record_api_call(GEMINI_MODEL, contents, phase=phase, target_status=_st, target_lock=_lk)
+                    _record_api_call(GEMINI_MODEL, attempt_contents, phase=phase, target_status=_st, target_lock=_lk)
                     local_client = _local_clients[cur_backend.name]
                     response = await asyncio.wait_for(
                         local_client.aio.models.generate_content(
                             model=GEMINI_MODEL,
-                            contents=contents,
-                            config=types.GenerateContentConfig(
-                                response_modalities=["IMAGE"],
-                                image_config=types.ImageConfig(
-                                    aspect_ratio="16:9",
-                                ),
-                            ),
+                            contents=attempt_contents,
+                            config=config,
                         ),
                         timeout=120,
                     )
+                    img_data = None
                     if (response.candidates
                             and response.candidates[0].content
                             and response.candidates[0].content.parts):
                         for part in response.candidates[0].content.parts:
                             if part.inline_data and part.inline_data.data:
                                 img_data = part.inline_data.data
+                                break
 
-                                if _st.get("add_border") and cur_backend.border_ref_files:
-                                    with _lk:
-                                        _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
-                                    border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk, client_override=local_client)
-                                    if border_result:
-                                        img_data = border_result
-                                        with _lk:
-                                            _st["cost"] += COST_PER_IMAGE
-                                            _st["session_cost"] += COST_PER_IMAGE
-                                    else:
-                                        with _lk:
-                                            _st["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
+                    if img_data is None:
+                        # No image in response — dump full Gemini refusal metadata.
+                        info = _diagnose_no_image(response)
+                        msg = f"thumb_{idx:03d}: no image | {json.dumps(info, default=str)[:800]}"
+                        with _lk:
+                            _st["log"].append(msg)
+                        print(f"[THUMB] {msg}")
+                        if revision_mode and attempt < attempt_cap - 1:
+                            continue
+                        with _lk:
+                            _st["errors"] += 1
+                        return None
 
-                                filename = f"thumb_{idx:03d}.png"
-                                filepath = os.path.join(output_dir, filename)
-                                img = Image.open(io.BytesIO(img_data))
-                                img.save(filepath, "PNG")
+                    # Revision mode + judge configured: gate on likeness BEFORE saving.
+                    if revision_mode and judge_fn is not None:
+                        try:
+                            verdict = judge_fn(img_data)
+                        except Exception as je:
+                            verdict = {"match": "no", "confidence": 0,
+                                       "reason": f"judge error: {str(je)[:150]}"}
+                        match = (verdict or {}).get("match", "no")
+                        conf = (verdict or {}).get("confidence", 0)
+                        reason = str((verdict or {}).get("reason", ""))[:150]
+                        if match != "yes":
+                            with _lk:
+                                _st["log"].append(
+                                    f"thumb_{idx:03d}: attempt {attempt+1} judge REJECTED "
+                                    f"(conf={conf} | {reason})"
+                                )
+                            if attempt < attempt_cap - 1:
+                                continue
+                            # Out of attempts — record failure, do not save.
+                            with _lk:
+                                _st["errors"] += 1
+                                _st["log"].append(
+                                    f"thumb_{idx:03d}: FAILED after {attempt+1} attempts "
+                                    f"(judge never matched)"
+                                )
+                            return None
+                        with _lk:
+                            _st["log"].append(
+                                f"thumb_{idx:03d}: attempt {attempt+1} judge MATCHED "
+                                f"(conf={conf} | {reason})"
+                            )
 
-                                with _lk:
-                                    _st["completed"] += 1
-                                    _st["cost"] += COST_PER_IMAGE
-                                    _st["session_cost"] += COST_PER_IMAGE
-                                    img_entry = {
-                                        "idx": idx,
-                                        "path": filepath,
-                                        "filename": filename,
-                                        "status": "ok",
-                                        "idea_idx": idea_idx,
-                                    }
-                                    _st["images"].append(img_entry)
+                    # Accept: optional border pass, then save.
+                    if _st.get("add_border") and cur_backend.border_ref_files:
+                        with _lk:
+                            _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
+                        border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk, client_override=local_client)
+                        if border_result:
+                            img_data = border_result
+                            with _lk:
+                                _st["cost"] += COST_PER_IMAGE
+                                _st["session_cost"] += COST_PER_IMAGE
+                        else:
+                            with _lk:
+                                _st["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
 
-                                    if idea_idx >= 0:
-                                        _st["idea_groups"].setdefault(idea_idx, []).append(img_entry)
-
-                                    _st["log"].append(
-                                        f"[{_st['completed']}/{_st['total']}] thumb_{idx:03d}.png OK ({cur_backend.name})"
-                                    )
-                                return filepath
+                    filename = f"thumb_{idx:03d}.png"
+                    filepath = os.path.join(output_dir, filename)
+                    img = Image.open(io.BytesIO(img_data))
+                    img.save(filepath, "PNG")
 
                     with _lk:
-                        _st["errors"] += 1
-                        _st["log"].append(f"thumb_{idx:03d}: no image in response")
-                    return None
+                        _st["completed"] += 1
+                        _st["cost"] += COST_PER_IMAGE
+                        _st["session_cost"] += COST_PER_IMAGE
+                        img_entry = {
+                            "idx": idx,
+                            "path": filepath,
+                            "filename": filename,
+                            "status": "ok",
+                            "idea_idx": idea_idx,
+                        }
+                        _st["images"].append(img_entry)
+
+                        if idea_idx >= 0:
+                            _st["idea_groups"].setdefault(idea_idx, []).append(img_entry)
+
+                        _st["log"].append(
+                            f"[{_st['completed']}/{_st['total']}] thumb_{idx:03d}.png OK ({cur_backend.name})"
+                        )
+                    return filepath
 
                 except asyncio.TimeoutError:
                     with _lk:
+                        _st["log"].append(f"thumb_{idx:03d}: attempt {attempt+1} timed out after 120s")
+                    if revision_mode and attempt < attempt_cap - 1:
+                        continue
+                    with _lk:
                         _st["errors"] += 1
-                        _st["log"].append(f"thumb_{idx:03d}: timed out after 120s")
                     return None
 
                 except Exception as e:
                     err = str(e)
-                    if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < 2:
-                        # Try swapping to fallback backend once per batch. If already on fallback,
-                        # just do the usual backoff-and-retry dance.
+                    # Rate-limit path: existing backoff-and-swap logic.
+                    if ("429" in err or "RESOURCE_EXHAUSTED" in err) and attempt < attempt_cap - 1:
                         new_backend = _maybe_swap(f"thumb_{idx:03d}")
                         if new_backend is cur_backend:
-                            wait = (2 ** attempt) + random.random()
+                            wait = (2 ** min(attempt, 5)) + random.random()
                             with _lk:
                                 if _st.get("cancel_requested"):
                                     _st["log"].append(f"thumb_{idx:03d}: cancelled")
@@ -445,11 +634,13 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                                     f"thumb_{idx:03d}: rate limited on {cur_backend.name}, retrying in {wait:.1f}s..."
                                 )
                             await asyncio.sleep(wait)
-                        # New backend selected OR backing off — loop back and try again.
+                        continue
+                    with _lk:
+                        _st["log"].append(f"thumb_{idx:03d}: attempt {attempt+1} ERROR — {err[:200]}")
+                    if revision_mode and attempt < attempt_cap - 1:
                         continue
                     with _lk:
                         _st["errors"] += 1
-                        _st["log"].append(f"thumb_{idx:03d}: ERROR — {err[:120]}")
                     return None
 
     tasks = [
@@ -460,7 +651,7 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
     return [r for r in results if r]
 
 
-def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None):
+def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None, revision_mode=False, judge_fn=None):
     """Run async generation in a background thread."""
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -488,7 +679,11 @@ def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", 
     def _run():
         try:
             results = asyncio.run(
-                generate_batch(backend, prompts, output_dir, phase, target_status=_st, target_lock=_lk)
+                generate_batch(
+                    backend, prompts, output_dir, phase,
+                    target_status=_st, target_lock=_lk,
+                    revision_mode=revision_mode, judge_fn=judge_fn,
+                )
             )
             with _lk:
                 _st["log"].append(

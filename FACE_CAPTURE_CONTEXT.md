@@ -2,7 +2,7 @@
 
 A macOS tool that scans video files for facial expressions using **Amazon Rekognition** and saves the best screenshots. Built as a web GUI served locally from Python.
 
-**Code now lives in the doom-thumbnails repo** as an orphan page at `/face-capture`. This local project is the development/testing copy. For production updates, edit `doom-thumbnails/thumbnail_gen.py`.
+**Code now lives in the doom-thumbnails repo** as an orphan page at `/face-capture`. This local project is the development/testing copy. For production updates, edit `doom-thumbnails/face_capture/` (Flask blueprint module).
 
 ---
 
@@ -103,7 +103,7 @@ When multiple expressions are selected (or `--expression all`), Rekognition runs
 The face capture page is deployed as part of **doom-thumbnails** on Render:
 - **Repo:** `tallchap/doom-thumbnails` on GitHub
 - **Page URL:** `yourdomain.com/face-capture` (orphan page, no links from other pages)
-- **Code location:** Inlined in `thumbnail_gen.py` (search for "Face Capture" section)
+- **Code location:** Flask blueprint at `face_capture/` (registered in `app.py`)
 - **Env vars on Render:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`
 
 ## File Details

@@ -34,6 +34,7 @@ APP_MODE = os.environ.get("APP_MODE", "thumbnails").strip().lower()
 # ----- Gemini -----
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 TEXT_MODEL = "gemini-2.5-flash"
+CLAUDE_IDEA_MODEL = "claude-opus-4-7"
 DESCRIPTION_MODEL = "gemini-3.1-pro-preview"
 
 # ----- Claude / GPT (descriptions page) -----
