@@ -66,6 +66,7 @@ APP_PASS = os.environ.get("APP_PASSWORD", "")
 APP_MODE = os.environ.get("APP_MODE", "thumbnails").strip().lower()
 GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 TEXT_MODEL = "gemini-2.5-flash"
+CLAUDE_IDEA_MODEL = "claude-opus-4-7"
 DESCRIPTION_MODEL = "gemini-3.1-pro-preview"
 CLAUDE_DESCRIPTION_MODEL = "claude-opus-4-6"
 GPT_DESCRIPTION_MODEL = "gpt-5.4-pro"
@@ -550,7 +551,7 @@ def download_image_bytes(url, timeout=10):
 
 
 def generate_ideas(client, title, custom_prompt, transcript, additional_instructions):
-    """Use Gemini text model to generate 10 thumbnail ideas. Returns list of strings."""
+    """Use Claude Opus 4.7 to generate 10 thumbnail ideas. Returns list of strings."""
     custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
     transcript_section = f"EPISODE TRANSCRIPT (excerpt):\n{transcript[:1500]}" if transcript else ""
     addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
@@ -561,9 +562,27 @@ def generate_ideas(client, title, custom_prompt, transcript, additional_instruct
         transcript_section=transcript_section,
         additional_instructions=addl,
     )
-    _record_api_call(TEXT_MODEL, prompt, phase="idea_generation")
-    response = client.models.generate_content(model=TEXT_MODEL, contents=prompt)
-    text = response.text.strip()
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY not set — required for thumbnail idea generation")
+    _record_api_call(CLAUDE_IDEA_MODEL, prompt, phase="idea_generation")
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": CLAUDE_IDEA_MODEL,
+            "max_tokens": 2000,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    parts = data.get("content", [])
+    text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     return _parse_json_array(text)
