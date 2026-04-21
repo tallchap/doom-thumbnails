@@ -553,7 +553,7 @@ def download_image_bytes(url, timeout=10):
 def generate_ideas(client, title, custom_prompt, transcript, additional_instructions):
     """Use Claude Opus 4.7 to generate 10 thumbnail ideas. Returns list of strings."""
     custom_section = f"CUSTOM PROMPT INFO: {custom_prompt}" if custom_prompt else ""
-    transcript_section = f"EPISODE TRANSCRIPT (excerpt):\n{transcript[:1500]}" if transcript else ""
+    transcript_section = f"EPISODE TRANSCRIPT (full):\n{transcript}" if transcript else ""
     addl = f"ADDITIONAL INSTRUCTIONS: {additional_instructions}" if additional_instructions else ""
 
     prompt = IDEA_GENERATION_PROMPT.format(
