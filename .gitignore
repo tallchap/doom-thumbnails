@@ -49,3 +49,4 @@ __pycache__/
 !format-app/
 !format-app/**
 .gstack/
+format-app/
