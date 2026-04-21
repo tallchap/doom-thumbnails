@@ -1559,6 +1559,102 @@ let selected = new Set();
 let allImages = [];
 let pollInterval = null;
 let transcript = '';
+let wasRunning = false;  // tracks running→done transition for completion notification
+const ORIGINAL_TITLE = document.title;
+let titleFlashInterval = null;
+
+// ----- Completion notification -----
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function playCompletionChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const tones = [880, 1320];  // two-note ding
+    tones.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const start = ctx.currentTime + i * 0.18;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.4);
+      osc.start(start);
+      osc.stop(start + 0.45);
+    });
+  } catch (e) { /* AudioContext unavailable — silent */ }
+}
+
+function flashTabTitle(message) {
+  if (titleFlashInterval) clearInterval(titleFlashInterval);
+  let toggle = false;
+  titleFlashInterval = setInterval(() => {
+    document.title = toggle ? ORIGINAL_TITLE : message;
+    toggle = !toggle;
+  }, 1000);
+  // Stop flashing once user comes back to the tab
+  const restore = () => {
+    if (titleFlashInterval) { clearInterval(titleFlashInterval); titleFlashInterval = null; }
+    document.title = ORIGINAL_TITLE;
+    window.removeEventListener('focus', restore);
+    document.removeEventListener('visibilitychange', onVis);
+  };
+  const onVis = () => { if (!document.hidden) restore(); };
+  window.addEventListener('focus', restore);
+  document.addEventListener('visibilitychange', onVis);
+}
+
+function showInPageToast(message) {
+  let toast = document.getElementById('completionToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'completionToast';
+    toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#4ade80;color:#06230f;padding:14px 20px;border-radius:10px;font-weight:700;font-size:15px;box-shadow:0 8px 32px rgba(0,0,0,.4);z-index:99999;cursor:pointer;display:flex;align-items:center;gap:10px;';
+    toast.innerHTML = '<span style="font-size:20px;">✓</span><span id="completionToastMsg"></span><span style="margin-left:12px;opacity:0.6;font-size:12px;">click to dismiss</span>';
+    toast.onclick = () => toast.remove();
+    document.body.appendChild(toast);
+  }
+  document.getElementById('completionToastMsg').textContent = message;
+  toast.style.display = 'flex';
+  setTimeout(() => { if (toast) toast.remove(); }, 8000);
+}
+
+function fireCompletionNotification(data) {
+  const phaseLabel = ({
+    round1: 'Thumbnails',
+    riff: 'Riff',
+    revision: 'Revision',
+    variation: 'Variations'
+  })[data.phase] || 'Generation';
+  const message = `${phaseLabel} done — ${data.completed}/${data.total}` +
+                  (data.errors > 0 ? ` (${data.errors} failed)` : '');
+
+  // 1. In-page toast (always visible if tab is in foreground)
+  showInPageToast(message);
+
+  // 2. Audio chime
+  playCompletionChime();
+
+  // 3. Tab title flash (visible when tab is in background)
+  flashTabTitle('✓ ' + message);
+
+  // 4. System desktop notification (works even when browser is minimized)
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification('Doom Thumbnails — ' + phaseLabel + ' Done', {
+        body: message,
+        tag: 'doom-thumbnails-complete',
+      });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch (e) { /* notification failed — toast/chime/title still fire */ }
+  }
+}
 
 // ----- Client-side session cost tracking -----
 // Persists in sessionStorage so it survives page refreshes and server restarts.
@@ -1868,6 +1964,10 @@ async function generateThumbnails() {
   flushActiveEdits();
   if (ideas.length === 0) { alert('No ideas to generate thumbnails for.'); return; }
 
+  // Ask for desktop notification permission on the first generate so we can
+  // ping the user when all images are done — even if the tab is in background.
+  requestNotificationPermission();
+
   const btn = document.getElementById('genThumbsBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Starting...';
@@ -2099,9 +2199,20 @@ function pollStatus() {
     // Disable riff buttons while generating, re-enable when done
     setRiffButtonsDisabled(!data.done);
 
+    // Track running→done transition so we only fire the completion notification
+    // when work actually finished during this polling session (not on page-load
+    // re-poll of an already-done state).
+    if (!data.done && data.total > 0) {
+      wasRunning = true;
+    }
+
     if (data.done) {
       clearInterval(pollInterval);
       pollInterval = null;
+      if (wasRunning) {
+        wasRunning = false;
+        fireCompletionNotification(data);
+      }
       // Collapse compute window after a delay
       setTimeout(() => {
         const win = document.getElementById('computeWindow');
