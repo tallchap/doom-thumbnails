@@ -16,7 +16,10 @@ from shared.drive_client import upload_episode_folder
 from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index
 from shared.state import get_session
 from thumbnails.generator import build_revision_prompts, run_generation
-from thumbnails.prompts import BORDER_PASS_PROMPT
+
+# Likeness judge is imported lazily inside revise_upload so that an
+# ImportError (missing dependency, bad path) degrades gracefully to
+# "no judge" rather than taking down the whole blueprint.
 
 revision_bp = Blueprint("revision", __name__, template_folder="templates")
 
@@ -111,8 +114,27 @@ def revise_upload():
     )
 
     _st["add_border"] = fields.get("add_border") == "1"
-    _st["border_prompt"] = fields.get("border_prompt", "").strip() or BORDER_PASS_PROMPT
-    run_generation(primary, prompts, round_dir, "revision_page", target_status=_st, target_lock=_lk)
+    _st["logo_corner"] = fields.get("logo_corner", "bottom-left").strip() or "bottom-left"
+
+    # Revision-mode reliability: if the prompt uses [tag: liron], gate each
+    # thumbnail on a likeness judge — Gemini retries up to 30 times per slot
+    # at varying temperatures + prompt perturbation until the judge matches.
+    has_liron_tag = "[tag: liron]" in prompt.lower()
+    judge_fn = None
+    if has_liron_tag:
+        try:
+            from scripts.liron_judge import judge as _liron_judge
+            judge_fn = _liron_judge
+            _st["log"].append("Likeness judge enabled ([tag: liron] detected)")
+        except Exception as je:
+            _st["log"].append(f"Likeness judge disabled (import failed: {str(je)[:150]})")
+
+    run_generation(
+        primary, prompts, round_dir, "revision_page",
+        target_status=_st, target_lock=_lk,
+        revision_mode=True,
+        judge_fn=judge_fn,
+    )
     with _lk:
         base_src = "uploaded file" if base_files else "follow-up result"
         _st["log"].append(f"Revision base: {base_src}")

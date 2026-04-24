@@ -379,6 +379,61 @@ def build_revision_prompts(backends, selected_images, speaker_refs_by_backend, c
     return prompts
 
 
+# ----- Pillow Border Composite (revision mode) -----
+
+_border_frame_cache = None
+_logo_cache = None
+ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+
+
+def apply_border_pillow(img_data: bytes, logo_corner: str = "bottom-left") -> bytes:
+    """Deterministic border composite using Pillow alpha-compositing."""
+    global _border_frame_cache, _logo_cache
+    if _border_frame_cache is None:
+        _border_frame_cache = Image.open(os.path.join(ASSETS_DIR, "border-frame.png")).convert("RGBA")
+    if _logo_cache is None:
+        _logo_cache = Image.open(os.path.join(ASSETS_DIR, "doom-debates-logo.png")).convert("RGBA")
+
+    thumb = Image.open(io.BytesIO(img_data)).convert("RGBA")
+    thumb = thumb.resize((1280, 720), Image.LANCZOS)
+
+    logo = _logo_cache
+    # Logo text occupies x=117-268, y=111-165 within the 387x290 asset.
+    # Reference position: text at x=57-208, y=619-673 (bottom-left).
+    # Paste offset = desired_text_start - text_offset_in_asset
+    text_x0, text_y0 = 117, 111  # text top-left within asset
+    lw, lh = logo.size
+    edge_pad_x, edge_pad_y = 57, 47  # padding from canvas edge to text start
+    positions = {
+        "bottom-left": (edge_pad_x - text_x0, 720 - edge_pad_y - (lh - text_y0)),
+        "bottom-right": (1280 - edge_pad_x - (lw - text_x0), 720 - edge_pad_y - (lh - text_y0)),
+        "top-left": (edge_pad_x - text_x0, edge_pad_y - text_y0),
+        "top-right": (1280 - edge_pad_x - (lw - text_x0), edge_pad_y - text_y0),
+    }
+    pos = positions.get(logo_corner, positions["bottom-left"])
+
+    logo_layer = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+    logo_layer.paste(logo, pos)
+    # Split logo into shadow (dark glow) and text (white)
+    import numpy as np
+    logo_arr = np.array(logo_layer)
+    text_mask = (logo_arr[:,:,0] > 180) & (logo_arr[:,:,1] > 180) & (logo_arr[:,:,2] > 180) & (logo_arr[:,:,3] > 100)
+    shadow_only = logo_arr.copy()
+    shadow_only[text_mask] = 0
+    text_only = np.zeros_like(logo_arr)
+    text_only[text_mask] = logo_arr[text_mask]
+    shadow_layer = Image.fromarray(shadow_only, "RGBA")
+    text_layer = Image.fromarray(text_only, "RGBA")
+    # Order: thumbnail → shadow → border → white text (text stays pure white)
+    result = Image.alpha_composite(thumb, shadow_layer)
+    result = Image.alpha_composite(result, _border_frame_cache)
+    result = Image.alpha_composite(result, text_layer)
+
+    out = io.BytesIO()
+    result.convert("RGB").save(out, "PNG")
+    return out.getvalue()
+
+
 # ----- Async Generation -----
 
 
@@ -571,18 +626,28 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                             )
 
                     # Accept: optional border pass, then save.
-                    if _st.get("add_border") and cur_backend.border_ref_files:
-                        with _lk:
-                            _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
-                        border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk, client_override=local_client)
-                        if border_result:
-                            img_data = border_result
+                    if _st.get("add_border"):
+                        if revision_mode:
                             with _lk:
-                                _st["cost"] += COST_PER_IMAGE
-                                _st["session_cost"] += COST_PER_IMAGE
-                        else:
+                                _st["log"].append(f"thumb_{idx:03d}: applying Pillow border composite...")
+                            try:
+                                logo_corner = _st.get("logo_corner", "bottom-left")
+                                img_data = apply_border_pillow(img_data, logo_corner)
+                            except Exception as e:
+                                with _lk:
+                                    _st["log"].append(f"thumb_{idx:03d}: Pillow border failed: {str(e)[:150]}")
+                        elif cur_backend.border_ref_files:
                             with _lk:
-                                _st["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
+                                _st["log"].append(f"thumb_{idx:03d}: applying border pass...")
+                            border_result = await apply_border_pass(cur_backend, img_data, _st.get("border_prompt"), target_status=_st, target_lock=_lk, client_override=local_client)
+                            if border_result:
+                                img_data = border_result
+                                with _lk:
+                                    _st["cost"] += COST_PER_IMAGE
+                                    _st["session_cost"] += COST_PER_IMAGE
+                            else:
+                                with _lk:
+                                    _st["log"].append(f"thumb_{idx:03d}: border pass failed, using original")
 
                     filename = f"thumb_{idx:03d}.png"
                     filepath = os.path.join(output_dir, filename)

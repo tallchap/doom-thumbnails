@@ -48,8 +48,7 @@
     <button onclick="openApiPreviewWindow()" style="background:#263b6a;color:#fff;border:1px solid #0f3460;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;white-space:nowrap;">Preview API Call</button>
   </div>
 
-  <!-- Hidden textareas to hold custom prompt values (populated by preview pane) -->
-  <textarea id="borderPromptText" style="display:none;"></textarea>
+  <!-- Hidden textarea to hold custom context prompt value (populated by preview pane) -->
   <textarea id="revisionContextText" style="display:none;"></textarea>
 
   <div class="card base-card">
@@ -70,6 +69,15 @@
     <h3 style="margin-top:0;">Revision Prompt + Reference Examples (Below)</h3>
     <label>Prompt to adjust the thumbnail</label>
     <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
+    <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+      <button type="button" class="btn btn-sm" id="insertLironTag" style="background:#0f3460;"
+              title="Insert a Liron identity tag — his reference photos will be attached so Gemini knows which character should look like Liron">
+        + Insert [tag: liron]
+      </button>
+      <span class="hint" style="margin:0;">
+        Use <code>[tag: liron]</code> inline to bind a character to Liron's likeness.
+      </span>
+    </div>
 
     <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
@@ -86,6 +94,12 @@
         <input type="checkbox" id="addBorderCheck">
         <span class="hint" style="margin:0;">Full Episode border</span>
       </label>
+      <select id="logoCorner" style="background:#0d1b3e;border:1px solid #0f3460;color:#fff;border-radius:8px;padding:8px;margin-left:4px;">
+        <option value="bottom-left" selected>Logo: Bottom-Left</option>
+        <option value="bottom-right">Logo: Bottom-Right</option>
+        <option value="top-left">Logo: Top-Left</option>
+        <option value="top-right">Logo: Top-Right</option>
+      </select>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
       <button id="cancelBtn" class="btn" style="background:#ef4444;display:none;" onclick="cancelGeneration()">Cancel</button>
       <button id="saveClearBtn" class="btn" style="background:#4ade80;display:none;" onclick="saveAndClear()">💾 Save & Clear</button>
@@ -100,7 +114,6 @@
       <summary style="color:#555;font-size:12px;cursor:pointer;">Debug: View actual API payloads</summary>
       <div style="display:flex;gap:8px;margin-top:6px;">
         <button class="btn btn-sm" type="button" onclick="openLastApiCallWindow()" style="background:#0f3460;">View last API prompt</button>
-        <button class="btn btn-sm" type="button" onclick="openBorderApiCallWindow()" style="background:#0f3460;">View border API prompt</button>
       </div>
     </details>
     <div id="costText" class="costline"></div>
@@ -126,11 +139,9 @@ let baseAttachmentFile = null;
 let pastedImages = [];
 let attachedImages = [];
 
-let defaultBorderPrompt = '';
 let defaultRevisionContext = '';
 let defaultRevisionTemplate = '';
 let brandCount = 0;
-let borderCount = 0;
 let promptsLoaded = false;
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -138,10 +149,6 @@ function loadPromptDefaults() {
   if (promptsLoaded) return Promise.resolve();
   promptsLoaded = true;
   return Promise.all([
-    fetch('/border_prompt').then(r=>r.json()).then(d=>{
-      defaultBorderPrompt = d.text || '';
-      if (!document.getElementById('borderPromptText').value) document.getElementById('borderPromptText').value = defaultBorderPrompt;
-    }),
     fetch('/revision_context_prompt').then(r=>r.json()).then(d=>{
       defaultRevisionContext = d.text || '';
       if (!document.getElementById('revisionContextText').value) document.getElementById('revisionContextText').value = defaultRevisionContext;
@@ -149,7 +156,6 @@ function loadPromptDefaults() {
     fetch('/revision_prompt_template').then(r=>r.json()).then(d=>{
       defaultRevisionTemplate = d.text || '';
       brandCount = d.brand_count || 0;
-      borderCount = d.border_count || 0;
     }),
   ]);
 }
@@ -157,7 +163,6 @@ function loadPromptDefaults() {
 function openApiPreviewWindow() {
   loadPromptDefaults().then(() => {
     const revisionContext = document.getElementById('revisionContextText').value || defaultRevisionContext;
-    const borderPrompt = document.getElementById('borderPromptText').value || defaultBorderPrompt;
     const userPrompt = document.getElementById('feedback').value.trim() || '[your revision prompt will appear here]';
     const addBorder = document.getElementById('addBorderCheck').checked;
     const attachCount = pastedImages.length + attachedImages.length;
@@ -223,24 +228,9 @@ function openApiPreviewWindow() {
         <div class="placeholder">Only included if prompt mentions "liron" (up to 2 images)</div>
       </div>
 
-      <h3 id="borderHeader" class="${addBorder ? '' : 'hidden'}">Border Pass Call &mdash; Contents[]</h3>
-
-      <div id="borderSection" class="${addBorder ? '' : 'hidden'}">
-        <div class="block grey">
-          <div class="block-label">CONTENT[1&ndash;${borderCount}] &mdash; Border Reference Images</div>
-          <div class="placeholder">${borderCount} border reference images from assets/</div>
-        </div>
-
-        <div class="block grey">
-          <div class="block-label">CONTENT[${borderCount + 1}] &mdash; Generated Thumbnail</div>
-          <div class="placeholder">[Output from revision call above]</div>
-        </div>
-
-        <div class="block editable">
-          <div class="block-label">CONTENT[${borderCount + 2}] &mdash; Border Pass Prompt (editable)</div>
-          <textarea id="prevBorder">${esc(borderPrompt)}</textarea>
-          <button class="btn-reset" onclick="document.getElementById('prevBorder').value=defaultBorder">Reset to Default</button>
-        </div>
+      <div class="block grey ${addBorder ? '' : 'hidden'}">
+        <div class="block-label">Border Composite (Pillow)</div>
+        <div class="placeholder">Deterministic alpha-composite — no API call. Logo corner: ${document.getElementById('logoCorner').value}</div>
       </div>
 
       <div class="btn-row">
@@ -250,11 +240,9 @@ function openApiPreviewWindow() {
 
       <scr` + `ipt>
         const defaultCtx = ${JSON.stringify(defaultRevisionContext)};
-        const defaultBorder = ${JSON.stringify(defaultBorderPrompt)};
         function applyAndClose() {
           if (window.opener) {
             window.opener.document.getElementById('revisionContextText').value = document.getElementById('prevCtx').value;
-            window.opener.document.getElementById('borderPromptText').value = document.getElementById('prevBorder') ? document.getElementById('prevBorder').value : '';
           }
           window.close();
         }
@@ -278,20 +266,6 @@ async function openLastApiCallWindow() {
     w.document.querySelector('pre').textContent = text;
   } catch (e) {
     w.document.querySelector('pre').textContent = 'Failed to load last API call: ' + e;
-  }
-}
-
-async function openBorderApiCallWindow() {
-  const w = window.open('', '_blank');
-  if (!w) { alert('Popup blocked.'); return; }
-  w.document.write('<!doctype html><html><head><title>Border Pass API Prompt</title><style>body{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0b1224;color:#e8ecf3} .bar{padding:10px 12px;background:#111b35;border-bottom:1px solid #1f2f57;position:sticky;top:0} pre{white-space:pre-wrap;word-break:break-word;margin:0;padding:12px;line-height:1.35;max-width:100%}</style></head><body><div class="bar">Border pass API call payload</div><pre>Loading\u2026</pre></body></html>');
-  try {
-    const r = await fetch('/last_border_api_call?page=revision&session_id=' + SESSION_ID);
-    const data = await r.json();
-    const text = (data && data.text) ? data.text : 'No border pass API call recorded yet.';
-    w.document.querySelector('pre').textContent = text;
-  } catch (e) {
-    w.document.querySelector('pre').textContent = 'Failed to load: ' + e;
   }
 }
 
@@ -525,8 +499,7 @@ async function runRevision() {
   fd.append('prompt', feedback);
   fd.append('count', String(requestedCount));
   fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
-  const customBorderPrompt = (document.getElementById('borderPromptText') || {}).value || '';
-  if (customBorderPrompt) fd.append('border_prompt', customBorderPrompt);
+  fd.append('logo_corner', document.getElementById('logoCorner').value);
   const customRevisionContext = (document.getElementById('revisionContextText') || {}).value || '';
   if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
 
@@ -677,6 +650,22 @@ function showSaveToast(folderName, folderUrl, fileCount) {
 
 renderAttachmentsPreview();
 startPolling();
+
+document.getElementById('insertLironTag').addEventListener('click', () => {
+  const ta = document.getElementById('feedback');
+  const tag = '[tag: liron]';
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  const before = ta.value.slice(0, start);
+  const after = ta.value.slice(end);
+  const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+  const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
+  const insert = (needsLeadingSpace ? ' ' : '') + tag + (needsTrailingSpace ? ' ' : '');
+  ta.value = before + insert + after;
+  const pos = start + insert.length;
+  ta.focus();
+  ta.setSelectionRange(pos, pos);
+});
 </script>
 </body>
 </html>
