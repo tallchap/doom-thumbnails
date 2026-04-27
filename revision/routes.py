@@ -38,6 +38,28 @@ def revision_index():
     return render_template("revision.html", git_version=GIT_VERSION)
 
 
+@revision_bp.route("/detect_faces", methods=["POST"])
+@require_auth
+def detect_faces():
+    """Detect faces in an uploaded image using OpenCV."""
+    try:
+        import cv2
+        import numpy as np
+        fields, files = parse_form_or_multipart(request)
+        img_bytes = files.get("image", [None])[0]
+        if not img_bytes:
+            return jsonify({"faces": []})
+        arr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
+        result = [{"x": int(x), "y": int(y), "w": int(w), "h": int(h)} for (x, y, w, h) in faces]
+        return jsonify({"faces": result})
+    except Exception as e:
+        return jsonify({"faces": [], "error": str(e)[:200]})
+
+
 @revision_bp.route("/revise_upload", methods=["POST"])
 @require_auth
 def revise_upload():
@@ -80,6 +102,41 @@ def revise_upload():
         except Exception as e:
             return jsonify({"error": f"Could not load follow-up base image: {str(e)[:200]}"})
 
+    # Face change preprocessing (optional)
+    face_prompt = fields.get("face_change_prompt", "").strip()
+    face_ref_files = files.get("face_ref_image", [])
+    face_mask_files = files.get("face_mask_image", [])
+    face_change_active = face_prompt and (face_ref_files or face_mask_files)
+    face_changed_bases = []
+
+    if face_change_active:
+        from thumbnails.generator import apply_face_change
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        base_buf = io.BytesIO()
+        base_img.save(base_buf, "PNG")
+        base_bytes = base_buf.getvalue()
+        mask_data = face_mask_files[0] if face_mask_files else None
+        ref_data = face_ref_files[0] if face_ref_files else None
+        import time as _time
+        _fc_start = _time.time()
+        _st["log"].append(f"Face change: firing {count} OpenAI call(s) in parallel (max_workers={min(count, 10)})...")
+
+        def run_face_change(idx):
+            result = apply_face_change(base_bytes, face_prompt, ref_data, mask_data=mask_data)
+            return idx, result
+
+        with ThreadPoolExecutor(max_workers=min(count, 10)) as executor:
+            futures = {executor.submit(run_face_change, i): i for i in range(count)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                _elapsed = _time.time() - _fc_start
+                try:
+                    _, face_result = future.result()
+                    face_changed_bases.append(Image.open(io.BytesIO(face_result)).convert("RGB"))
+                    _st["log"].append(f"Face change {idx+1}/{count} done at +{_elapsed:.1f}s")
+                except Exception as e:
+                    _st["log"].append(f"Face change {idx+1}/{count} failed at +{_elapsed:.1f}s: {str(e)[:150]}")
+
     backends = get_all_backends()
     primary = backends[0]
     attachment_refs_by_backend = upload_files_from_bytes(files.get("revision_images", []), "revision_img")
@@ -102,16 +159,30 @@ def revise_upload():
         speaker_refs_by_backend = {"primary": list(stored_speakers or []), "secondary": []}
 
     custom_context = fields.get("revision_context_prompt", "").strip() or None
-    prompts = build_revision_prompts(
-        backends,
-        [base_img],
-        speaker_refs_by_backend,
-        prompt,
-        count_per=count,
-        idea_idx=revision_idea_idx,
-        attachment_refs_by_backend=attachment_refs_by_backend if any(attachment_refs_by_backend.values()) else None,
-        context_prompt=custom_context,
-    )
+
+    if face_changed_bases:
+        # Each face-changed variant gets 1 Gemini revision
+        prompts = build_revision_prompts(
+            backends,
+            face_changed_bases,
+            speaker_refs_by_backend,
+            prompt,
+            count_per=1,
+            idea_idx=revision_idea_idx,
+            attachment_refs_by_backend=attachment_refs_by_backend if any(attachment_refs_by_backend.values()) else None,
+            context_prompt=custom_context,
+        )
+    else:
+        prompts = build_revision_prompts(
+            backends,
+            [base_img],
+            speaker_refs_by_backend,
+            prompt,
+            count_per=count,
+            idea_idx=revision_idea_idx,
+            attachment_refs_by_backend=attachment_refs_by_backend if any(attachment_refs_by_backend.values()) else None,
+            context_prompt=custom_context,
+        )
 
     _st["add_border"] = fields.get("add_border") == "1"
     _st["logo_corner"] = fields.get("logo_corner", "bottom-left").strip() or "bottom-left"

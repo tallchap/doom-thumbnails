@@ -379,6 +379,103 @@ def build_revision_prompts(backends, selected_images, speaker_refs_by_backend, c
     return prompts
 
 
+# ----- Face Change (GPT Image API inpainting) -----
+
+
+def apply_face_change(img_data: bytes, face_prompt: str, ref_face_data: bytes = None, mask_data: bytes = None) -> bytes:
+    """Swap/adjust a face using Pillow mask + GPT Image API inpainting."""
+    import cv2
+    import numpy as np
+    import openai
+    import base64
+    from config import OPENAI_API_KEY
+
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    thumb = Image.open(io.BytesIO(img_data)).convert("RGB")
+    thumb = thumb.resize((1280, 720), Image.LANCZOS)
+
+    if mask_data:
+        # Hand-drawn mask provided — use it directly
+        mask = Image.open(io.BytesIO(mask_data)).convert("RGBA")
+        mask = mask.resize((1280, 720), Image.LANCZOS)
+    else:
+        # Auto-detect faces with OpenCV
+        thumb_arr = np.array(thumb)
+        gray = cv2.cvtColor(thumb_arr, cv2.COLOR_RGB2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
+
+        if len(faces) == 0:
+            raise RuntimeError("No faces detected in the thumbnail")
+
+        prompt_lower = face_prompt.lower()
+        if len(faces) == 1:
+            target = faces[0]
+        else:
+            face_centers = [(x + w // 2, i) for i, (x, y, w, h) in enumerate(faces)]
+            if "right" in prompt_lower:
+                target = faces[max(face_centers, key=lambda c: c[0])[1]]
+            elif "left" in prompt_lower:
+                target = faces[min(face_centers, key=lambda c: c[0])[1]]
+            elif "middle" in prompt_lower or "center" in prompt_lower:
+                mid = 640
+                target = faces[min(face_centers, key=lambda c: abs(c[0] - mid))[1]]
+            else:
+                target = faces[max(face_centers, key=lambda c: c[0])[1]]
+
+        fx, fy, fw, fh = int(target[0]), int(target[1]), int(target[2]), int(target[3])
+        pad_top = int(fh * 0.3)
+        pad_bottom = int(fh * 0.15)
+        pad_side = int(fw * 0.1)
+        ex = max(0, fx - pad_side)
+        ey = max(0, fy - pad_top)
+        ew = fw + 2 * pad_side
+        eh = fh + pad_top + pad_bottom
+
+        from PIL import ImageDraw
+        mask = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse([ex, ey, ex + ew, ey + eh], fill=(0, 0, 0, 0))
+
+    thumb_buf = io.BytesIO()
+    thumb.save(thumb_buf, "PNG")
+    thumb_buf.seek(0)
+
+    mask_buf = io.BytesIO()
+    mask.save(mask_buf, "PNG")
+    mask_buf.seek(0)
+
+    # Build image list: thumbnail + optional reference face
+    images = [("thumb.png", thumb_buf, "image/png")]
+    if ref_face_data:
+        images.append(("ref.png", io.BytesIO(ref_face_data), "image/png"))
+
+    import time as _time
+    _t0 = _time.time()
+    thread_name = threading.current_thread().name
+    print(f"[FACE] {thread_name} starting OpenAI call at t={_t0:.1f}")
+
+    client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    response = client.images.edit(
+        model="gpt-image-2",
+        image=images,
+        mask=("mask.png", mask_buf, "image/png"),
+        prompt=face_prompt,
+        size="1280x720",
+        quality="high",
+    )
+
+    _elapsed = _time.time() - _t0
+    print(f"[FACE] {thread_name} finished OpenAI call in {_elapsed:.1f}s")
+
+    result_b64 = response.data[0].b64_json
+    if not result_b64:
+        raise RuntimeError("GPT Image API returned no image")
+    return base64.b64decode(result_b64)
+
+
 # ----- Pillow Border Composite (revision mode) -----
 
 _border_frame_cache = None

@@ -107,6 +107,40 @@
     <div id="statusText" class="status"></div>
   </div>
 
+  <div class="card" style="border-color:#8b5cf6;">
+    <div class="section-kicker" style="color:#a78bfa;">FACE CHANGE (optional)</div>
+    <h3 style="margin-top:0;">Swap or adjust a face before revision</h3>
+    <label>Face change prompt</label>
+    <textarea id="faceChangePrompt" placeholder="e.g. change the face on the right to look like the enclosed man with a skeptical expression"></textarea>
+    <input type="file" id="faceRefFile" accept="image/*" style="display:none;">
+    <span id="faceRefName" style="display:none;"></span>
+    <div id="faceRefPasteZone" style="display:none;"></div>
+    <div id="faceRefPreview" style="display:none;"></div>
+
+    <label style="margin-top:14px;">Paint the mask <span class="hint" style="text-transform:none;">(paint over the area to change — only painted pixels get edited)</span></label>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px; margin-bottom:8px;">
+      <button type="button" class="btn btn-sm" style="background:#8b5cf6;" onclick="loadMaskCanvas()">Load Thumbnail to Canvas</button>
+      <label class="hint" style="margin:0;">Brush size</label>
+      <input type="range" id="brushSize" min="5" max="100" value="30" style="width:120px;">
+      <span id="brushSizeLabel" class="hint" style="margin:0;">30px</span>
+      <button type="button" class="btn btn-sm" style="background:#ef4444;" onclick="clearMaskCanvas()">Clear Mask</button>
+      <button type="button" class="btn btn-sm" style="background:#263b6a;" onclick="undoMaskStroke()">Undo</button>
+      <button type="button" class="btn btn-sm" style="background:#6b7280;" onclick="dismissMaskCanvas()">✕ Dismiss Canvas</button>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin:0;">
+        <input type="checkbox" id="autoDetectFaces" checked>
+        <span class="hint" style="margin:0;">Auto-detect faces</span>
+      </label>
+    </div>
+    <div style="position:relative; display:inline-block; border:1px solid #333; border-radius:8px; overflow:hidden; background:#000;">
+      <canvas id="maskCanvas" width="1280" height="720" style="width:640px; height:360px; cursor:crosshair; display:none;"></canvas>
+      <div id="maskPlaceholder" style="width:640px; height:360px; display:flex; align-items:center; justify-content:center; color:#555; font-size:13px;">
+        Upload a thumbnail above, then click "Load Thumbnail to Canvas"
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:8px;">Paint red over the area you want changed. If auto-detect is on, detected faces show as blue outlines — click one to auto-mask it. Only the painted area gets sent to GPT for inpainting.</div>
+  </div>
+
   <div class="card">
     <h3 style="margin-top:0;">Live Logs</h3>
     <div id="logBox" class="logs"></div>
@@ -127,8 +161,7 @@
   <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
 
 <script>
-const SESSION_ID = sessionStorage.getItem('revisionSessionId') || crypto.randomUUID();
-sessionStorage.setItem('revisionSessionId', SESSION_ID);
+const SESSION_ID = crypto.randomUUID();
 console.log('[REVISION] session_id=' + SESSION_ID);
 
 let pollInterval = null;
@@ -138,6 +171,264 @@ let followUpBasePath = '';
 let baseAttachmentFile = null;
 let pastedImages = [];
 let attachedImages = [];
+
+let faceRefFile = null;
+
+function setFaceRef(file) {
+  faceRefFile = file;
+  const nameEl = document.getElementById('faceRefName');
+  const previewEl = document.getElementById('faceRefPreview');
+  if (faceRefFile) {
+    nameEl.textContent = faceRefFile.name || 'pasted image';
+    const url = URL.createObjectURL(faceRefFile);
+    previewEl.innerHTML = '<div class="preview"><img src="' + url + '"><div class="cap"><span>' + esc(faceRefFile.name || 'face_ref.png') + '</span><button class="xbtn" onclick="clearFaceRef()">×</button></div></div>';
+  }
+}
+
+function clearFaceRef() {
+  faceRefFile = null;
+  document.getElementById('faceRefFile').value = '';
+  document.getElementById('faceRefName').textContent = '';
+  document.getElementById('faceRefPreview').innerHTML = '';
+}
+
+// ----- Mask Canvas -----
+let maskStrokes = [];
+let maskDrawing = false;
+let maskCanvasLoaded = false;
+let detectedFaces = [];
+
+function loadMaskCanvas() {
+  const canvas = document.getElementById('maskCanvas');
+  const placeholder = document.getElementById('maskPlaceholder');
+  const ctx = canvas.getContext('2d');
+
+  // Get the base thumbnail from the revision form
+  let imgSrc = null;
+  if (followUpBasePath) {
+    imgSrc = '/image?path=' + encodeURIComponent(followUpBasePath);
+  } else if (baseAttachmentFile) {
+    imgSrc = URL.createObjectURL(baseAttachmentFile);
+  }
+  if (!imgSrc) {
+    alert('Upload a thumbnail first (Step 1 above)');
+    return;
+  }
+
+  const img = new window.Image();
+  img.onload = () => {
+    canvas.style.display = 'block';
+    placeholder.style.display = 'none';
+    ctx.clearRect(0, 0, 1280, 720);
+    ctx.drawImage(img, 0, 0, 1280, 720);
+    maskCanvasLoaded = true;
+    maskStrokes = [];
+    detectedFaces = [];
+
+    // Auto-detect faces if checked
+    if (document.getElementById('autoDetectFaces').checked) {
+      detectFacesOnCanvas();
+    }
+  };
+  img.src = imgSrc;
+}
+
+function detectFacesOnCanvas() {
+  // Send the canvas image to server for OpenCV face detection
+  const canvas = document.getElementById('maskCanvas');
+  canvas.toBlob((blob) => {
+    const fd = new FormData();
+    fd.append('image', blob, 'thumb.png');
+    fetch('/detect_faces?session_id=' + SESSION_ID, { method: 'POST', body: fd })
+      .then(r => r.json())
+      .then(data => {
+        detectedFaces = data.faces || [];
+        redrawMaskCanvas();
+        if (detectedFaces.length > 0) {
+          document.getElementById('statusText').textContent = detectedFaces.length + ' face(s) detected — click one to auto-mask it.';
+        }
+      })
+      .catch(() => {});
+  }, 'image/png');
+}
+
+function redrawMaskCanvas() {
+  const canvas = document.getElementById('maskCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // Redraw base image
+  let imgSrc = null;
+  if (followUpBasePath) {
+    imgSrc = '/image?path=' + encodeURIComponent(followUpBasePath);
+  } else if (baseAttachmentFile) {
+    imgSrc = URL.createObjectURL(baseAttachmentFile);
+  }
+  if (!imgSrc) return;
+
+  const img = new window.Image();
+  img.onload = () => {
+    ctx.clearRect(0, 0, 1280, 720);
+    ctx.drawImage(img, 0, 0, 1280, 720);
+
+    // Replay all strokes
+    for (const stroke of maskStrokes) {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+      ctx.lineWidth = stroke.size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (stroke.type === 'ellipse') {
+        ctx.beginPath();
+        ctx.ellipse(stroke.cx, stroke.cy, stroke.rx, stroke.ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (stroke.points.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (let i = 1; i < stroke.points.length; i++) {
+          ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    // Draw detected face outlines
+    ctx.strokeStyle = 'rgba(100, 150, 255, 0.7)';
+    ctx.lineWidth = 3;
+    for (const f of detectedFaces) {
+      ctx.strokeRect(f.x, f.y, f.w, f.h);
+    }
+  };
+  img.src = imgSrc;
+}
+
+function getCanvasPos(e) {
+  const canvas = document.getElementById('maskCanvas');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = 1280 / rect.width;
+  const scaleY = 720 / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY
+  };
+}
+
+function clearMaskCanvas() {
+  maskStrokes = [];
+  if (maskCanvasLoaded) redrawMaskCanvas();
+}
+
+function undoMaskStroke() {
+  maskStrokes.pop();
+  if (maskCanvasLoaded) redrawMaskCanvas();
+}
+
+function dismissMaskCanvas() {
+  const canvas = document.getElementById('maskCanvas');
+  const placeholder = document.getElementById('maskPlaceholder');
+  canvas.style.display = 'none';
+  placeholder.style.display = 'flex';
+  canvas.getContext('2d').clearRect(0, 0, 1280, 720);
+  maskStrokes = [];
+  detectedFaces = [];
+  maskCanvasLoaded = false;
+}
+
+function getMaskBlob() {
+  // Generate a proper alpha-channel mask from the painted strokes
+  return new Promise((resolve) => {
+    const offscreen = document.createElement('canvas');
+    offscreen.width = 1280;
+    offscreen.height = 720;
+    const ctx = offscreen.getContext('2d');
+
+    // Fill with opaque black (keep everything)
+    ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+    ctx.fillRect(0, 0, 1280, 720);
+
+    // Draw strokes as transparent (edit area)
+    ctx.globalCompositeOperation = 'destination-out';
+    for (const stroke of maskStrokes) {
+      if (stroke.type === 'ellipse') {
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+        ctx.ellipse(stroke.cx, stroke.cy, stroke.rx, stroke.ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (stroke.points.length > 0) {
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(0, 0, 0, 1)';
+        ctx.lineWidth = stroke.size;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (let i = 1; i < stroke.points.length; i++) {
+          ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+        }
+        ctx.stroke();
+      }
+    }
+
+    offscreen.toBlob(resolve, 'image/png');
+  });
+}
+
+// Canvas mouse/touch events
+document.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('maskCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const brushSlider = document.getElementById('brushSize');
+  const brushLabel = document.getElementById('brushSizeLabel');
+
+  brushSlider.addEventListener('input', () => {
+    brushLabel.textContent = brushSlider.value + 'px';
+  });
+
+  let currentStroke = null;
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (!maskCanvasLoaded) return;
+    const pos = getCanvasPos(e);
+
+
+
+    // Start freehand stroke
+    maskDrawing = true;
+    currentStroke = { type: 'freehand', size: parseInt(brushSlider.value), points: [pos] };
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+    ctx.lineWidth = currentStroke.size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.moveTo(pos.x, pos.y);
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!maskDrawing || !currentStroke) return;
+    const pos = getCanvasPos(e);
+    currentStroke.points.push(pos);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y);
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    if (currentStroke && currentStroke.points.length > 0) {
+      maskStrokes.push(currentStroke);
+    }
+    maskDrawing = false;
+    currentStroke = null;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    if (currentStroke && currentStroke.points.length > 0) {
+      maskStrokes.push(currentStroke);
+    }
+    maskDrawing = false;
+    currentStroke = null;
+  });
+});
 
 let defaultRevisionContext = '';
 let defaultRevisionTemplate = '';
@@ -446,6 +737,43 @@ document.getElementById('feedback').addEventListener('paste', (e) => {
   document.getElementById('statusText').textContent = 'Attached ' + pasted.length + ' pasted reference image(s) from clipboard.';
 });
 
+// Face ref: file input, paste zone, drop zone
+const faceRefInput = document.getElementById('faceRefFile');
+if (faceRefInput) {
+  faceRefInput.addEventListener('change', (e) => {
+    if (e.target.files[0]) setFaceRef(e.target.files[0]);
+  });
+}
+
+const faceRefPasteZone = document.getElementById('faceRefPasteZone');
+if (faceRefPasteZone) {
+  faceRefPasteZone.addEventListener('focus', () => faceRefPasteZone.classList.add('active'));
+  faceRefPasteZone.addEventListener('blur', () => faceRefPasteZone.classList.remove('active'));
+  faceRefPasteZone.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    setFaceRef(pasted[0]);
+    document.getElementById('statusText').textContent = 'Face reference pasted.';
+  });
+  setupDropZone(faceRefPasteZone, (dropped) => {
+    setFaceRef(dropped[0]);
+    document.getElementById('statusText').textContent = 'Face reference dropped.';
+  });
+}
+
+// Also allow pasting into the face change prompt textarea
+const facePromptEl = document.getElementById('faceChangePrompt');
+if (facePromptEl) {
+  facePromptEl.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    setFaceRef(pasted[0]);
+    document.getElementById('statusText').textContent = 'Face reference pasted from prompt box.';
+  });
+}
+
 function clearAttachments() {
   pastedImages = [];
   attachedImages = [];
@@ -500,6 +828,17 @@ async function runRevision() {
   fd.append('count', String(requestedCount));
   fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
   fd.append('logo_corner', document.getElementById('logoCorner').value);
+  const facePrompt = (document.getElementById('faceChangePrompt') || {}).value || '';
+  if (facePrompt && faceRefFile) {
+    fd.append('face_change_prompt', facePrompt);
+    fd.append('face_ref_image', faceRefFile, faceRefFile.name || 'face_ref.png');
+  }
+  // If mask was hand-drawn, send it (overrides auto-detection)
+  if (facePrompt && maskStrokes.length > 0) {
+    if (!fd.has('face_change_prompt')) fd.append('face_change_prompt', facePrompt);
+    const maskBlob = await getMaskBlob();
+    if (maskBlob) fd.append('face_mask_image', maskBlob, 'mask.png');
+  }
   const customRevisionContext = (document.getElementById('revisionContextText') || {}).value || '';
   if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
 
@@ -613,7 +952,6 @@ function resetGeneratedState() {
   // Reset in-memory tracking
   seen = new Set();
   activeOutputDir = '';
-  followUpBasePath = '';
 
   // Hide the save button
   const saveBtn = document.getElementById('saveClearBtn');
