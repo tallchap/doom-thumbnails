@@ -69,15 +69,6 @@
     <h3 style="margin-top:0;">Revision Prompt + Reference Examples (Below)</h3>
     <label>Prompt to adjust the thumbnail</label>
     <textarea id="feedback" placeholder="Describe the edits. You can also paste example images (⌘V / Ctrl+V) directly in this prompt box."></textarea>
-    <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
-      <button type="button" class="btn btn-sm" id="insertLironTag" style="background:#0f3460;"
-              title="Insert a Liron identity tag — his reference photos will be attached so Gemini knows which character should look like Liron">
-        + Insert [tag: liron]
-      </button>
-      <span class="hint" style="margin:0;">
-        Use <code>[tag: liron]</code> inline to bind a character to Liron's likeness.
-      </span>
-    </div>
 
     <input type="file" id="attachFiles" accept="image/*" multiple style="display:none;">
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
@@ -989,21 +980,6 @@ function showSaveToast(folderName, folderUrl, fileCount) {
 renderAttachmentsPreview();
 startPolling();
 
-document.getElementById('insertLironTag').addEventListener('click', () => {
-  const ta = document.getElementById('feedback');
-  const tag = '[tag: liron]';
-  const start = ta.selectionStart ?? ta.value.length;
-  const end = ta.selectionEnd ?? ta.value.length;
-  const before = ta.value.slice(0, start);
-  const after = ta.value.slice(end);
-  const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
-  const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
-  const insert = (needsLeadingSpace ? ' ' : '') + tag + (needsTrailingSpace ? ' ' : '');
-  ta.value = before + insert + after;
-  const pos = start + insert.length;
-  ta.focus();
-  ta.setSelectionRange(pos, pos);
-});
 </script>
 </body>
 </html>

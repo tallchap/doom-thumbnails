@@ -245,11 +245,6 @@ def build_variation_prompts(backends, selected_images, speaker_refs_by_backend, 
     return prompts
 
 
-TAG_RE = re.compile(r"\[tag:\s*([a-z0-9_-]+)\s*\]", re.IGNORECASE)
-LIRON_TAG_REPLACEMENT = (
-    "Liron (whose reference photos are enclosed below, "
-    "see 'LIRON REFERENCE PHOTOS')"
-)
 
 # Revision reliability (Phase 2): temperature jitter across retry attempts.
 REVISION_TEMPS = [0.8, 1.0, 1.2, 1.4, 0.6, 1.5, 0.9, 1.1, 1.3, 0.7]
@@ -303,69 +298,22 @@ def _perturb_contents(contents, level):
     return out
 
 
-def _rewrite_liron_tags(prompt):
-    """Replace every [tag: liron] with the verbose inline form.
-
-    Returns (rewritten_prompt, had_liron_tag). Non-liron tags are left
-    verbatim and logged as unknown.
-    """
-    had = False
-
-    def sub(m):
-        nonlocal had
-        name = m.group(1).lower()
-        if name == "liron":
-            had = True
-            return LIRON_TAG_REPLACEMENT
-        print(f"[REVISION] unknown tag: {name}")
-        return m.group(0)
-
-    return TAG_RE.sub(sub, prompt or ""), had
-
-
 def build_revision_prompts(backends, selected_images, speaker_refs_by_backend, custom_prompt, count_per=3, idea_idx=-1, attachment_refs_by_backend=None, context_prompt=None):
-    """Build revision prompts with custom instructions.
-
-    Liron refs are only attached when the prompt contains an explicit
-    [tag: liron] marker. The tag is rewritten inline to a verbose
-    natural-language phrase pointing at the LIRON REFERENCE PHOTOS block.
-    """
+    """Build revision prompts with custom instructions."""
     prompts = []
-    rewritten, had_liron_tag = _rewrite_liron_tags(custom_prompt)
-    if had_liron_tag:
-        print("[REVISION] [tag: liron] detected — attaching Liron reference photos")
 
     for img in selected_images:
         for v in range(count_per):
             contents_by_backend = {}
             for backend in backends:
-                liron_refs = (
-                    _select_identity_refs(backend.liron_files, MAX_LIRON_REFS_PER_CALL)
-                    if had_liron_tag else []
-                )
                 attachment_refs = _refs_for_backend(backend, attachment_refs_by_backend)
 
-                prompt_for_model = rewritten
-                if had_liron_tag and not liron_refs:
-                    print("[REVISION] [tag: liron] present but no Liron refs uploaded — stripping inline reference")
-                    prompt_for_model = rewritten.replace(LIRON_TAG_REPLACEMENT, "Liron")
-
                 prompt_text = REVISION_PROMPT.format(
-                    custom_prompt=prompt_for_model,
+                    custom_prompt=custom_prompt,
                     variation_seed=v + 1,
                     variation_total=count_per,
                 )
                 contents = [prompt_text, img]
-
-                if liron_refs:
-                    contents.append(
-                        "=== LIRON REFERENCE PHOTOS === "
-                        "The person referred to as 'Liron' in the instructions above "
-                        "MUST be a faithful likeness of the person in the following photos — "
-                        "same facial structure, nose, eyes, beard shape, skin tone. "
-                        "Do NOT generate a generic man's face. Copy this exact likeness."
-                    )
-                    contents.extend(liron_refs)
 
                 contents.append(context_prompt or REVISION_CONTEXT_PROMPT)
                 brand_sample = _select_brand_refs(backend)
@@ -625,7 +573,7 @@ async def apply_border_pass(backend: GeminiBackend, img_data, prompt_override=No
     return None
 
 
-async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None, revision_mode=False, judge_fn=None):
+async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None, revision_mode=False, ):
     """Fire parallel Gemini API calls and save results.
 
     prompts is a list of (idea_idx, variation_num, contents_by_backend) where
@@ -633,9 +581,7 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
     On 429 from primary, the batch swaps its current backend to secondary.
 
     When `revision_mode=True`: each slot gets up to REVISION_MAX_ATTEMPTS
-    tries with temperature jitter + progressive prompt perturbation, and
-    (if `judge_fn` is provided) the produced image must pass the judge
-    before it's accepted. First judge-matching image wins for that slot.
+    tries with temperature jitter + progressive prompt perturbation.
     """
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -744,38 +690,6 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                             _st["errors"] += 1
                         return None
 
-                    # Revision mode + judge configured: gate on likeness BEFORE saving.
-                    if revision_mode and judge_fn is not None:
-                        try:
-                            verdict = judge_fn(img_data)
-                        except Exception as je:
-                            verdict = {"match": "no", "confidence": 0,
-                                       "reason": f"judge error: {str(je)[:150]}"}
-                        match = (verdict or {}).get("match", "no")
-                        conf = (verdict or {}).get("confidence", 0)
-                        reason = str((verdict or {}).get("reason", ""))[:150]
-                        if match != "yes":
-                            with _lk:
-                                _st["log"].append(
-                                    f"thumb_{idx:03d}: attempt {attempt+1} judge REJECTED "
-                                    f"(conf={conf} | {reason})"
-                                )
-                            if attempt < attempt_cap - 1:
-                                continue
-                            # Out of attempts — record failure, do not save.
-                            with _lk:
-                                _st["errors"] += 1
-                                _st["log"].append(
-                                    f"thumb_{idx:03d}: FAILED after {attempt+1} attempts "
-                                    f"(judge never matched)"
-                                )
-                            return None
-                        with _lk:
-                            _st["log"].append(
-                                f"thumb_{idx:03d}: attempt {attempt+1} judge MATCHED "
-                                f"(conf={conf} | {reason})"
-                            )
-
                     # Accept: optional border pass, then save.
                     if _st.get("add_border"):
                         if revision_mode:
@@ -867,7 +781,7 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
     return [r for r in results if r]
 
 
-def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None, revision_mode=False, judge_fn=None):
+def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", target_status=None, target_lock=None, revision_mode=False, ):
     """Run async generation in a background thread."""
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -898,7 +812,7 @@ def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", 
                 generate_batch(
                     backend, prompts, output_dir, phase,
                     target_status=_st, target_lock=_lk,
-                    revision_mode=revision_mode, judge_fn=judge_fn,
+                    revision_mode=revision_mode,
                 )
             )
             with _lk:
