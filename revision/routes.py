@@ -127,15 +127,17 @@ def revise_upload():
         _st["log"].append(f"Face change: firing {count} async OpenAI call(s) via asyncio.gather...")
 
         results = asyncio.run(async_face_changes(count, thumb_bytes, mask_bytes, ref_bytes, face_prompt))
+        _fc_elapsed = _time.time() - _fc_start
 
+        ok_count = 0
         for r in results:
-            _elapsed = _time.time() - _fc_start
             if isinstance(r, Exception):
-                _st["log"].append(f"Face change failed at +{_elapsed:.1f}s: {str(r)[:150]}")
+                _st["log"].append(f"Face change failed: {str(r)[:150]}")
             else:
                 idx, face_result = r
                 face_changed_bases.append(Image.open(io.BytesIO(face_result)).convert("RGB"))
-                _st["log"].append(f"Face change {idx+1}/{count} done at +{_elapsed:.1f}s")
+                ok_count += 1
+        _st["log"].append(f"All {ok_count}/{count} face changes done in {_fc_elapsed:.1f}s → starting Gemini immediately")
 
     backends = get_all_backends()
     primary = backends[0]
