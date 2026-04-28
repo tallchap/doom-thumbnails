@@ -110,20 +110,27 @@ def revise_upload():
     face_changed_bases = []
 
     if face_change_active:
-        from thumbnails.generator import apply_face_change
+        from thumbnails.generator import prepare_face_change, call_face_change
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        import openai
+        from config import OPENAI_API_KEY
+        import time as _time
+
         base_buf = io.BytesIO()
         base_img.save(base_buf, "PNG")
         base_bytes = base_buf.getvalue()
         mask_data = face_mask_files[0] if face_mask_files else None
         ref_data = face_ref_files[0] if face_ref_files else None
-        import time as _time
+
+        _st["log"].append(f"Face change: preprocessing image + mask...")
+        thumb_bytes, mask_bytes, ref_bytes = prepare_face_change(base_bytes, face_prompt, ref_data, mask_data=mask_data)
+
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
         _fc_start = _time.time()
         _st["log"].append(f"Face change: firing {count} OpenAI call(s) in parallel (max_workers={min(count, 10)})...")
 
         def run_face_change(idx):
-            result = apply_face_change(base_bytes, face_prompt, ref_data, mask_data=mask_data)
-            return idx, result
+            return idx, call_face_change(client, thumb_bytes, mask_bytes, ref_bytes, face_prompt)
 
         with ThreadPoolExecutor(max_workers=min(count, 10)) as executor:
             futures = {executor.submit(run_face_change, i): i for i in range(count)}
