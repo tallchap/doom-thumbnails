@@ -474,6 +474,51 @@ def call_face_change(client, thumb_bytes: bytes, mask_bytes: bytes, ref_bytes: b
     return base64.b64decode(result_b64)
 
 
+async def async_call_face_change(client, idx: int, thumb_bytes: bytes, mask_bytes: bytes, ref_bytes: bytes, prompt: str) -> tuple:
+    """Async I/O: truly concurrent OpenAI calls via asyncio.gather."""
+    import base64
+    import time as _time
+
+    images = [("thumb.png", io.BytesIO(thumb_bytes), "image/png")]
+    if ref_bytes:
+        images.append(("ref.png", io.BytesIO(ref_bytes), "image/png"))
+
+    _t0 = _time.time()
+    print(f"[FACE] async task {idx} starting OpenAI call")
+
+    response = await client.images.edit(
+        model="gpt-image-2",
+        image=images,
+        mask=("mask.png", io.BytesIO(mask_bytes), "image/png"),
+        prompt=prompt,
+        size="1280x720",
+        quality="high",
+    )
+
+    _elapsed = _time.time() - _t0
+    print(f"[FACE] async task {idx} finished OpenAI call in {_elapsed:.1f}s")
+
+    result_b64 = response.data[0].b64_json
+    if not result_b64:
+        raise RuntimeError("GPT Image API returned no image")
+    return idx, base64.b64decode(result_b64)
+
+
+async def async_face_changes(count: int, thumb_bytes: bytes, mask_bytes: bytes, ref_bytes: bytes, prompt: str, log_fn=None):
+    """Fire all face change calls concurrently with asyncio.gather."""
+    import openai
+    from config import OPENAI_API_KEY
+
+    client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+    tasks = [
+        async_call_face_change(client, i, thumb_bytes, mask_bytes, ref_bytes, prompt)
+        for i in range(count)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await client.close()
+    return results
+
+
 def apply_face_change(img_data: bytes, face_prompt: str, ref_face_data: bytes = None, mask_data: bytes = None) -> bytes:
     """Legacy wrapper — prep + call in one shot (used when not parallelizing)."""
     import openai

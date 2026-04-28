@@ -110,10 +110,8 @@ def revise_upload():
     face_changed_bases = []
 
     if face_change_active:
-        from thumbnails.generator import prepare_face_change, call_face_change
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        import openai
-        from config import OPENAI_API_KEY
+        from thumbnails.generator import prepare_face_change, async_face_changes
+        import asyncio
         import time as _time
 
         base_buf = io.BytesIO()
@@ -125,24 +123,19 @@ def revise_upload():
         _st["log"].append(f"Face change: preprocessing image + mask...")
         thumb_bytes, mask_bytes, ref_bytes = prepare_face_change(base_bytes, face_prompt, ref_data, mask_data=mask_data)
 
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
         _fc_start = _time.time()
-        _st["log"].append(f"Face change: firing {count} OpenAI call(s) in parallel (max_workers={min(count, 10)})...")
+        _st["log"].append(f"Face change: firing {count} async OpenAI call(s) via asyncio.gather...")
 
-        def run_face_change(idx):
-            return idx, call_face_change(client, thumb_bytes, mask_bytes, ref_bytes, face_prompt)
+        results = asyncio.run(async_face_changes(count, thumb_bytes, mask_bytes, ref_bytes, face_prompt))
 
-        with ThreadPoolExecutor(max_workers=min(count, 10)) as executor:
-            futures = {executor.submit(run_face_change, i): i for i in range(count)}
-            for future in as_completed(futures):
-                idx = futures[future]
-                _elapsed = _time.time() - _fc_start
-                try:
-                    _, face_result = future.result()
-                    face_changed_bases.append(Image.open(io.BytesIO(face_result)).convert("RGB"))
-                    _st["log"].append(f"Face change {idx+1}/{count} done at +{_elapsed:.1f}s")
-                except Exception as e:
-                    _st["log"].append(f"Face change {idx+1}/{count} failed at +{_elapsed:.1f}s: {str(e)[:150]}")
+        for r in results:
+            _elapsed = _time.time() - _fc_start
+            if isinstance(r, Exception):
+                _st["log"].append(f"Face change failed at +{_elapsed:.1f}s: {str(r)[:150]}")
+            else:
+                idx, face_result = r
+                face_changed_bases.append(Image.open(io.BytesIO(face_result)).convert("RGB"))
+                _st["log"].append(f"Face change {idx+1}/{count} done at +{_elapsed:.1f}s")
 
     backends = get_all_backends()
     primary = backends[0]
