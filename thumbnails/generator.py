@@ -483,6 +483,7 @@ def apply_face_change(img_data: bytes, face_prompt: str, ref_face_data: bytes = 
 _border_frame_cache = None
 _logo_cache = None
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+BORDER_INSET = 30
 
 
 def apply_border_pillow(img_data: bytes, logo_corner: str = "bottom-left") -> bytes:
@@ -494,7 +495,12 @@ def apply_border_pillow(img_data: bytes, logo_corner: str = "bottom-left") -> by
         _logo_cache = Image.open(os.path.join(ASSETS_DIR, "doom-debates-logo.png")).convert("RGBA")
 
     thumb = Image.open(io.BytesIO(img_data)).convert("RGBA")
-    thumb = thumb.resize((1280, 720), Image.LANCZOS)
+    inner_w = 1280 - 2 * BORDER_INSET
+    inner_h = 720 - 2 * BORDER_INSET
+    thumb = thumb.resize((inner_w, inner_h), Image.LANCZOS)
+    canvas = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    canvas.paste(thumb, (BORDER_INSET, BORDER_INSET))
+    thumb = canvas
 
     logo = _logo_cache
     # Logo text occupies x=117-268, y=111-165 within the 387x290 asset.
