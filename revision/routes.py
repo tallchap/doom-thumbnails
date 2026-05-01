@@ -15,7 +15,7 @@ from shared.gemini_client import get_primary_backend, get_all_backends, upload_f
 from shared.drive_client import upload_episode_folder
 from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index
 from shared.state import get_session
-from thumbnails.generator import build_revision_prompts, run_generation
+from thumbnails.generator import apply_border_pillow, build_revision_prompts, run_generation
 
 
 revision_bp = Blueprint("revision", __name__, template_folder="templates")
@@ -199,6 +199,51 @@ def revise_upload():
         _st["log"].append(f"Requested attempts: {count}")
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": len(prompts)})
+
+
+@revision_bp.route("/border_only", methods=["POST"])
+@require_auth
+def border_only():
+    """Apply border composite to an uploaded image — no AI, instant, $0."""
+    fields, files = parse_form_or_multipart(request)
+    base_files = files.get("base_thumbnail", [])
+    base_path = fields.get("base_path", "").strip()
+    logo_corner = fields.get("logo_corner", "bottom-left").strip() or "bottom-left"
+
+    if not base_files and not base_path:
+        return jsonify({"error": "Upload a thumbnail image"})
+
+    try:
+        if base_files:
+            img = Image.open(io.BytesIO(base_files[0])).convert("RGB")
+        else:
+            real = os.path.realpath(base_path)
+            thumbs_real = os.path.realpath(THUMBNAILS_DIR)
+            if not real.startswith(thumbs_real):
+                return jsonify({"error": "Path outside thumbnails dir"})
+            if not os.path.isfile(real):
+                return jsonify({"error": "Image not found on disk"})
+            img = Image.open(real).convert("RGB")
+    except Exception as e:
+        return jsonify({"error": f"Could not load image: {str(e)[:200]}"})
+
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    bordered = apply_border_pillow(buf.getvalue(), logo_corner)
+
+    episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
+    os.makedirs(episode_dir, exist_ok=True)
+    out_path = os.path.join(episode_dir, f"border_only_{datetime.datetime.now().strftime('%H%M%S')}.png")
+    with open(out_path, "wb") as f:
+        f.write(bordered)
+
+    _st, _lk = _get_revision_session()
+    with _lk:
+        idx = len(_st.get("images", [])) + 1
+        _st.setdefault("images", []).append({"idx": idx, "path": out_path})
+        _st["log"].append(f"Border-only applied (logo: {logo_corner})")
+
+    return jsonify({"ok": True, "path": out_path, "idx": idx})
 
 
 @revision_bp.route("/revision/save_and_clear", methods=["POST"])

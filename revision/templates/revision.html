@@ -51,6 +51,12 @@
   <!-- Hidden textarea to hold custom context prompt value (populated by preview pane) -->
   <textarea id="revisionContextText" style="display:none;"></textarea>
 
+  <!-- Mode Toggle -->
+  <div style="display:flex;gap:0;margin-bottom:16px;border-radius:10px;overflow:hidden;border:2px solid #0f3460;">
+    <button id="modeRevision" class="btn" onclick="setMode('revision')" style="flex:1;border-radius:0;font-size:14px;background:#e94560;color:#fff;">🎨 AI Revision</button>
+    <button id="modeBorder" class="btn" onclick="setMode('border')" style="flex:1;border-radius:0;font-size:14px;background:#0d1b3e;color:#6b7fa8;border-left:1px solid #0f3460;">🖼 Border Only</button>
+  </div>
+
   <div class="card base-card">
     <div class="section-kicker">STEP 1</div>
     <h3 style="margin-top:0;">Original Thumbnail</h3>
@@ -64,7 +70,7 @@
     <div id="basePreview" class="base-preview-grid"></div>
   </div>
 
-  <div class="card refs-card">
+  <div class="card refs-card" id="step2Card">
     <div class="section-kicker">STEP 2</div>
     <h3 style="margin-top:0;">Revision Prompt + Reference Examples (Below)</h3>
     <label>Prompt to adjust the thumbnail</label>
@@ -98,7 +104,24 @@
     <div id="statusText" class="status"></div>
   </div>
 
-  <div class="card" style="border-color:#8b5cf6;">
+  <!-- Border-Only Settings (visible only in border mode) -->
+  <div class="card" id="borderOnlyCard" style="border-color:#4ade80;display:none;">
+    <div class="section-kicker" style="color:#4ade80;">BORDER SETTINGS</div>
+    <h3 style="margin-top:0;">Apply Border Frame</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <select id="borderOnlyCorner" style="background:#0d1b3e;border:1px solid #0f3460;color:#fff;border-radius:8px;padding:8px;">
+        <option value="bottom-left" selected>Logo: Bottom-Left</option>
+        <option value="bottom-right">Logo: Bottom-Right</option>
+        <option value="top-left">Logo: Top-Left</option>
+        <option value="top-right">Logo: Top-Right</option>
+      </select>
+      <button id="borderOnlyBtn" class="btn" style="background:#4ade80;color:#000;font-weight:800;" onclick="runBorderOnly()">Apply Border</button>
+      <span class="hint" style="margin-left:4px;">Instant — no API call, $0 cost</span>
+    </div>
+    <div id="borderOnlyStatus" class="status"></div>
+  </div>
+
+  <div class="card" id="faceChangeCard" style="border-color:#8b5cf6;">
     <div class="section-kicker" style="color:#a78bfa;">FACE CHANGE (optional)</div>
     <h3 style="margin-top:0;">Swap or adjust a face before revision</h3>
     <label>Face change prompt</label>
@@ -975,6 +998,69 @@ function showSaveToast(folderName, folderUrl, fileCount) {
     const t = document.getElementById('saveToast');
     if (t) t.remove();
   }, 20000);
+}
+
+let currentMode = 'revision';
+
+function setMode(mode) {
+  currentMode = mode;
+  const revBtn = document.getElementById('modeRevision');
+  const borBtn = document.getElementById('modeBorder');
+  const step2 = document.getElementById('step2Card');
+  const faceCard = document.getElementById('faceChangeCard');
+  const borderOnlyCard = document.getElementById('borderOnlyCard');
+
+  if (mode === 'border') {
+    revBtn.style.background = '#0d1b3e'; revBtn.style.color = '#6b7fa8';
+    borBtn.style.background = '#4ade80'; borBtn.style.color = '#000';
+    step2.style.opacity = '0.3'; step2.style.pointerEvents = 'none';
+    faceCard.style.opacity = '0.3'; faceCard.style.pointerEvents = 'none';
+    borderOnlyCard.style.display = '';
+  } else {
+    revBtn.style.background = '#e94560'; revBtn.style.color = '#fff';
+    borBtn.style.background = '#0d1b3e'; borBtn.style.color = '#6b7fa8';
+    step2.style.opacity = '1'; step2.style.pointerEvents = '';
+    faceCard.style.opacity = '1'; faceCard.style.pointerEvents = '';
+    borderOnlyCard.style.display = 'none';
+  }
+}
+
+async function runBorderOnly() {
+  const hasBase = !!baseAttachmentFile || !!followUpBasePath;
+  if (!hasBase) {
+    alert('Attach a thumbnail first (Step 1).');
+    return;
+  }
+
+  const btn = document.getElementById('borderOnlyBtn');
+  const status = document.getElementById('borderOnlyStatus');
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+  status.textContent = 'Applying border...';
+
+  const fd = new FormData();
+  if (followUpBasePath) {
+    fd.append('base_path', followUpBasePath);
+  } else {
+    fd.append('base_thumbnail', baseAttachmentFile, baseAttachmentFile.name || 'base.png');
+  }
+  fd.append('logo_corner', document.getElementById('borderOnlyCorner').value);
+
+  try {
+    const resp = await fetch('/border_only?session_id=' + SESSION_ID, { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) {
+      status.textContent = 'Error: ' + data.error;
+      return;
+    }
+    status.textContent = 'Border applied — added to results.';
+    addImageCard({ idx: data.idx || 1, path: data.path });
+  } catch (e) {
+    status.textContent = 'Error: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Apply Border';
+  }
 }
 
 renderAttachmentsPreview();
