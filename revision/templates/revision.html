@@ -170,10 +170,13 @@
   <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
 
 <script>
-// Per-tab session id; survives a same-tab refresh so reloading mid-run reattaches
-// to the in-progress generation instead of orphaning it.
-const SESSION_ID = sessionStorage.getItem('revSessionId') || crypto.randomUUID();
-sessionStorage.setItem('revSessionId', SESSION_ID);
+// Browser-wide revision session id (localStorage, not per-tab): survives tab
+// close/reopen and is shared across all /revision tabs, so results never end up
+// "stranded" in a session the visible tab isn't polling. Safe — output dirs are
+// session-scoped, and a 2nd concurrent Generate just gets "Generation already in
+// progress".
+const SESSION_ID = localStorage.getItem('revSessionId') || crypto.randomUUID();
+localStorage.setItem('revSessionId', SESSION_ID);
 console.log('[REVISION] session_id=' + SESSION_ID);
 
 let pollInterval = null;
@@ -851,6 +854,9 @@ async function runRevision() {
     const data = await resp.json();
     if (data.error) { alert(data.error); return; }
     activeOutputDir = data.output_dir || '';
+    // Fresh result set for this batch — clear the grid + dedup set.
+    document.getElementById('resultsGrid').innerHTML = '';
+    seen = new Set();
     document.getElementById('statusText').textContent = 'Running ' + requestedCount + ' parallel attempts...';
     startPolling();
   } catch (e) {
@@ -871,7 +877,7 @@ function downloadResult(pathEncoded, idx) {
 }
 
 function addImageCard(img) {
-  if (activeOutputDir && (!img.path || !img.path.startsWith(activeOutputDir))) return;
+  if (!img || !img.path) return;
   if (seen.has(img.idx)) return;
   seen.add(img.idx);
   const grid = document.getElementById('resultsGrid');

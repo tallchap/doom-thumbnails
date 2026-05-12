@@ -819,6 +819,9 @@ def run_generation(backend: GeminiBackend, prompts, output_dir, phase="round1", 
             _st["idea_groups"] = {}
             _st["cost"] = 0.0
         elif phase == "revision_page":
+            # Each /revision batch is a fresh result set (like round1) — don't
+            # let consecutive revisions accumulate in _st["images"].
+            _st["images"] = []
             _st["idea_groups"] = {}
             _st["cost"] = 0.0
         _st["done"] = False

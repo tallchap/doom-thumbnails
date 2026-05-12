@@ -663,6 +663,10 @@ def save_and_clear():
 
     session_id = request.args.get("session_id") or request.form.get("session_id") or "default"
 
+    # Reset session state synchronously so a follow-up generation can't race the
+    # (slow) Drive upload — the upload uses the captured base_name/text/upload_list.
+    reset_generation_state(_st, _lk)
+
     def _bg():
         try:
             result = upload_episode_folder(base_name, text, upload_list)
@@ -671,10 +675,8 @@ def save_and_clear():
         except Exception as e:
             status = f"✗ Drive save failed: {str(e)[:200]}"
             print(f"[THUMB] save_and_clear FAILED | session={session_id} | {e}")
-        finally:
-            reset_generation_state(_st, _lk)
-            with _lk:
-                _st["log"].append(status)
+        with _lk:
+            _st["log"].append(status)
 
     threading.Thread(target=_bg, daemon=True).start()
     return jsonify({"ok": True})
