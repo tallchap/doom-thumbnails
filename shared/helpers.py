@@ -2,9 +2,21 @@
 
 import datetime
 import json
+import re
 import urllib.parse
 
 from shared.state import status, status_lock
+
+
+def safe_session_id(session_id):
+    """Sanitize a client-supplied session id for use in a filesystem path.
+
+    Browser ids come from crypto.randomUUID() (already [0-9a-f-]); this just
+    prevents a malformed/hostile session_id from escaping THUMBNAILS_DIR when
+    used to build an output directory name.
+    """
+    s = re.sub(r"[^A-Za-z0-9_-]", "", session_id or "")[:64]
+    return s or "default"
 
 
 def _serialize_for_debug(obj):

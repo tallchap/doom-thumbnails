@@ -13,7 +13,7 @@ from auth import require_auth
 from config import GIT_VERSION, THUMBNAILS_DIR
 from shared.gemini_client import get_primary_backend, get_all_backends, upload_files_from_bytes
 from shared.drive_client import upload_episode_folder
-from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index
+from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index, safe_session_id
 from shared.state import get_session
 from thumbnails.generator import apply_border_pillow, build_revision_prompts, run_generation
 
@@ -144,7 +144,9 @@ def revise_upload():
     primary = backends[0]
     attachment_refs_by_backend = upload_files_from_bytes(files.get("revision_images", []), "revision_img")
 
-    episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
+    # Scope the output dir to this session so two browsers can't overwrite each other's files
+    session_id = safe_session_id(request.args.get("session_id") or "default")
+    episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}-{session_id}")
     with _lk:
         _st["round_num"] = _st.get("round_num", 0) + 1
         round_num = _st["round_num"]
@@ -235,7 +237,8 @@ def border_only():
     img.save(buf, "PNG")
     bordered = apply_border_pillow(buf.getvalue(), logo_corner)
 
-    episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}")
+    session_id = safe_session_id(request.args.get("session_id") or "default")
+    episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}-{session_id}")
     os.makedirs(episode_dir, exist_ok=True)
     out_path = os.path.join(episode_dir, f"border_only_{datetime.datetime.now().strftime('%H%M%S')}.png")
     with open(out_path, "wb") as f:

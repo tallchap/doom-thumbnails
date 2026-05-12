@@ -18,7 +18,7 @@ from config import (
 )
 from shared.gemini_client import get_primary_backend, get_all_backends, upload_files_from_bytes
 from shared.drive_client import upload_episode_folder
-from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index
+from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index, safe_session_id
 from shared.state import get_session
 from thumbnails.brave_search import search_images_brave, download_image_bytes
 from thumbnails.generator import (
@@ -336,9 +336,11 @@ def generate_from_ideas():
                 for name, refs in extra.items():
                     source_refs_by_backend.setdefault(name, []).extend(refs)
 
+    session_id = safe_session_id(request.args.get("session_id") or request.form.get("session_id") or "default")
     slug = re.sub(r"[^a-z0-9]+", "-", title[:40].lower()).strip("-") or "episode"
     date = datetime.date.today().isoformat()
-    episode_dir = os.path.join(THUMBNAILS_DIR, f"{slug}-{date}")
+    # session_id keeps two browsers from writing into (and overwriting) the same dir
+    episode_dir = os.path.join(THUMBNAILS_DIR, f"{slug}-{date}-{session_id}")
     round_dir = os.path.join(episode_dir, "round1")
     os.makedirs(round_dir, exist_ok=True)
 
@@ -403,7 +405,8 @@ def riff_idea():
 
     episode_dir = _st.get("episode_dir", "")
     if not episode_dir:
-        episode_dir = os.path.join(THUMBNAILS_DIR, f"riff-{datetime.date.today().isoformat()}")
+        session_id = safe_session_id(request.args.get("session_id") or request.form.get("session_id") or "default")
+        episode_dir = os.path.join(THUMBNAILS_DIR, f"riff-{datetime.date.today().isoformat()}-{session_id}")
 
     with _lk:
         _st["round_num"] = _st.get("round_num", 1) + 1
