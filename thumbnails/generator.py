@@ -248,7 +248,7 @@ def build_variation_prompts(backends, selected_images, speaker_refs_by_backend, 
 
 # Revision reliability (Phase 2): temperature jitter across retry attempts.
 REVISION_TEMPS = [0.8, 1.0, 1.2, 1.4, 0.6, 1.5, 0.9, 1.1, 1.3, 0.7]
-REVISION_MAX_ATTEMPTS = 30
+REVISION_MAX_ATTEMPTS = 8
 
 
 def _diagnose_no_image(response):
@@ -608,9 +608,10 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
     # Mutable, shared across all concurrent generate_one tasks. On 429, one task
     # may swap this to the fallback backend; all subsequent tasks pick up the new backend.
     current_backend_ref = [backend]
+    nonrl_swap_done = [False]  # whether a non-rate-limit (no-image/error) swap has fired this batch
     swap_lock = threading.Lock()
 
-    def _maybe_swap(log_prefix):
+    def _maybe_swap(log_prefix, reason="rate-limited"):
         """Swap current backend to fallback if available. Return the (possibly new) backend."""
         with swap_lock:
             cur = current_backend_ref[0]
@@ -619,7 +620,7 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                 return cur
             current_backend_ref[0] = fb
             with _lk:
-                _st["log"].append(f"{log_prefix}: primary rate-limited, swapping batch to {fb.name}")
+                _st["log"].append(f"{log_prefix}: {reason} on {cur.name}, swapping batch to {fb.name}")
             return fb
 
     async def generate_one(idx, idea_idx, contents_by_backend):
@@ -643,9 +644,11 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                     return None
 
                 # Revision mode: temperature jitter + prompt perturbation schedule.
+                # Escalate perturbation immediately — an identical retry almost never
+                # un-sticks a MALFORMED_FUNCTION_CALL, so only attempt 0 is verbatim.
                 if revision_mode:
                     temp = REVISION_TEMPS[attempt % len(REVISION_TEMPS)]
-                    pert_level = 0 if attempt < 10 else (1 if attempt < 20 else 2)
+                    pert_level = 0 if attempt == 0 else (1 if attempt <= 2 else 2)
                     attempt_contents = _perturb_contents(contents, pert_level)
                     config = types.GenerateContentConfig(
                         response_modalities=["IMAGE"],
@@ -691,6 +694,12 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                             _st["log"].append(msg)
                         print(f"[THUMB] {msg}")
                         if revision_mode and attempt < attempt_cap - 1:
+                            # First no-image of the batch: move everyone to the other key
+                            # (the model often behaves on a fresh project), then keep
+                            # perturbing on subsequent retries. One swap only — no ping-pong.
+                            if not nonrl_swap_done[0]:
+                                nonrl_swap_done[0] = True
+                                _maybe_swap(f"thumb_{idx:03d}", reason="no image / malformed")
                             continue
                         with _lk:
                             _st["errors"] += 1
@@ -774,6 +783,9 @@ async def generate_batch(backend: GeminiBackend, prompts, output_dir, phase="rou
                     with _lk:
                         _st["log"].append(f"thumb_{idx:03d}: attempt {attempt+1} ERROR — {err[:200]}")
                     if revision_mode and attempt < attempt_cap - 1:
+                        if not nonrl_swap_done[0]:
+                            nonrl_swap_done[0] = True
+                            _maybe_swap(f"thumb_{idx:03d}", reason="error")
                         continue
                     with _lk:
                         _st["errors"] += 1

@@ -10,6 +10,7 @@
 !Procfile
 !render.yaml
 !deploy-cloudrun.sh
+!Dockerfile
 
 # Modular Flask structure
 !shared/
@@ -22,6 +23,8 @@
 !descriptions/**
 !face_capture/
 !face_capture/**
+!logs/
+!logs/**
 
 # Ignore compiled Python files within tracked dirs
 __pycache__/

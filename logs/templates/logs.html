@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Doom Debates — Backend Logs</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0a0e1a; color: #cdd6e6;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 12.5px; display: flex; flex-direction: column;
+  }
+  header {
+    flex: 0 0 auto; padding: 8px 12px; background: #0f1730; border-bottom: 1px solid #1e2a4a;
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  header h1 { font-size: 13px; margin: 0 8px 0 0; color: #8fb2ff; font-weight: 700; }
+  header a.back { color: #6b7fa8; text-decoration: none; font-size: 12px; }
+  header a.back:hover { color: #8fb2ff; }
+  button, .btn {
+    background: #1b2748; color: #cdd6e6; border: 1px solid #2c3b66; border-radius: 6px;
+    padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #243358; }
+  button.on { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  input.filter {
+    background: #0a1124; color: #e6ecf8; border: 1px solid #2c3b66; border-radius: 6px;
+    padding: 4px 8px; font: inherit; font-size: 12px; min-width: 240px;
+  }
+  .spacer { flex: 1 1 auto; }
+  .count { color: #6b7fa8; font-size: 11.5px; }
+  #log {
+    flex: 1 1 auto; overflow-y: auto; padding: 6px 0; background: #0a0e1a;
+  }
+  .row { padding: 0 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+  .row:hover { background: #11182c; }
+  .row .t { color: #5b6b8c; }
+  .row .s { color: #44597f; padding: 0 6px; }
+  .row .m { color: #cdd6e6; }
+  .row.lvl-WARNING .m { color: #f5c451; }
+  .row.lvl-ERROR .m, .row.lvl-CRITICAL .m { color: #ff7676; }
+  .row.lvl-DEBUG .m { color: #6b7fa8; }
+  .row.stream-err .m { color: #ffb4b4; }
+  .row.marker { color: #f5c451; padding: 4px 12px; font-style: italic; }
+  .hint { color: #5b6b8c; font-size: 11px; padding: 6px 12px; }
+  footer { flex: 0 0 auto; text-align: center; padding: 6px; color: #3b4767; font-size: 11px; border-top: 1px solid #1e2a4a; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🪵 Backend Logs</h1>
+  <a class="back" href="/">← Main</a>
+  <a class="back" href="/revision">Revision</a>
+  <span class="spacer"></span>
+  <input id="filter" class="filter" type="text" placeholder="filter… (substring, or /regex/i)" autocomplete="off">
+  <button id="follow" class="on" title="Auto-scroll to newest">Follow tail</button>
+  <button id="pause" title="Pause / resume polling">Pause</button>
+  <button id="clear" title="Clear what's shown (keeps streaming)">Clear view</button>
+  <a class="btn" href="/logs/download" title="Download the whole in-memory buffer">Download .txt</a>
+  <span id="count" class="count"></span>
+</header>
+<div id="log"></div>
+<div class="hint">Live, in-memory — last ~20k lines, resets when the Cloud Run instance restarts. Full durable history: <code>gcloud run services logs read doom-thumbnails --project=segment-446404 --region=us-central1</code></div>
+<footer>{{ git_version }}</footer>
+<script>
+const logEl = document.getElementById('log');
+const filterEl = document.getElementById('filter');
+const followBtn = document.getElementById('follow');
+const pauseBtn = document.getElementById('pause');
+const clearBtn = document.getElementById('clear');
+const countEl = document.getElementById('count');
+
+let lastSeq = 0;
+let total = 0;
+let polling = true;
+let follow = true;
+let pollTimer = null;
+let filterRe = null;     // RegExp or null
+let filterStr = '';      // lowercased substring, or ''
+const MAX_DOM_ROWS = 8000;
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function matches(text) {
+  if (filterRe) { try { return filterRe.test(text); } catch (_) { return true; } }
+  if (filterStr) return text.toLowerCase().indexOf(filterStr) !== -1;
+  return true;
+}
+
+function atBottom() {
+  return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 24;
+}
+
+function makeRow(e) {
+  const div = document.createElement('div');
+  div.className = 'row' + (e.level ? ' lvl-' + e.level : '') + (e.stream === 'err' ? ' stream-err' : '');
+  const time = (e.ts || '').split('T')[1] || e.ts || '';
+  const tag = (e.stream || '') + (e.level ? '/' + e.level : '');
+  div.innerHTML = '<span class="t">' + esc(time) + '</span><span class="s">' + esc(tag) + '</span><span class="m">' + esc(e.text || '') + '</span>';
+  div.dataset.text = (e.text || '') + ' ' + tag;
+  div.style.display = matches(div.dataset.text) ? '' : 'none';
+  return div;
+}
+
+function addMarker(text) {
+  const div = document.createElement('div');
+  div.className = 'row marker';
+  div.textContent = '— ' + text + ' —';
+  logEl.appendChild(div);
+}
+
+function trimDom() {
+  while (logEl.childElementCount > MAX_DOM_ROWS) logEl.removeChild(logEl.firstElementChild);
+}
+
+function updateCount() {
+  let shown = 0;
+  for (const r of logEl.children) if (r.style.display !== 'none' && !r.classList.contains('marker')) shown++;
+  countEl.textContent = 'showing ' + shown + (filterStr || filterRe ? ' (filtered)' : '') + ' · buffer ~' + total;
+}
+
+function applyFilter() {
+  const raw = filterEl.value.trim();
+  filterRe = null; filterStr = '';
+  const m = raw.match(/^\/(.*)\/([a-z]*)$/);
+  if (m) { try { filterRe = new RegExp(m[1], m[2] || ''); } catch (_) { filterRe = null; filterStr = raw.toLowerCase(); } }
+  else filterStr = raw.toLowerCase();
+  for (const r of logEl.children) {
+    if (r.classList.contains('marker')) continue;
+    r.style.display = matches(r.dataset.text || r.textContent) ? '' : 'none';
+  }
+  updateCount();
+}
+
+async function pollTick() {
+  if (!polling) return;
+  try {
+    const r = await fetch('/logs/data?since=' + lastSeq, { cache: 'no-store' });
+    const d = await r.json();
+    total = d.total != null ? d.total : total;
+    if (d.dropped && lastSeq > 0) addMarker('buffer rolled over — older lines dropped');
+    const wasBottom = atBottom();
+    let added = 0;
+    for (const e of (d.lines || [])) { logEl.appendChild(makeRow(e)); added++; }
+    if (typeof d.seq === 'number' && d.seq >= lastSeq) lastSeq = d.seq;
+    if (added) { trimDom(); updateCount(); if (follow || wasBottom) logEl.scrollTop = logEl.scrollHeight; }
+    else updateCount();
+  } catch (e) {
+    // transient — just keep going
+  }
+  if (polling) pollTimer = setTimeout(pollTick, 600);
+}
+
+followBtn.onclick = () => { follow = !follow; followBtn.classList.toggle('on', follow); if (follow) logEl.scrollTop = logEl.scrollHeight; };
+pauseBtn.onclick = () => {
+  polling = !polling;
+  pauseBtn.textContent = polling ? 'Pause' : 'Resume';
+  pauseBtn.classList.toggle('on', !polling);
+  if (polling) pollTick();
+};
+clearBtn.onclick = () => { logEl.innerHTML = ''; updateCount(); };
+filterEl.addEventListener('input', applyFilter);
+logEl.addEventListener('scroll', () => { if (!atBottom() && follow) { follow = false; followBtn.classList.remove('on'); } });
+
+pollTick();
+</script>
+</body>
+</html>

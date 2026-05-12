@@ -6,8 +6,10 @@ API key and holds its own File API upload handles (which are per-key scoped).
 
 import os
 import sys
+import tempfile
 import time
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -15,6 +17,33 @@ from google import genai
 from google.genai import types
 
 from config import EXAMPLES_DIR, LIRON_DIR, SCRIPT_DIR
+
+_MIME_BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+
+
+def _upload_local_file(backend, filepath, display_name):
+    """Upload a local file to a backend's File API via an ASCII-named temp copy.
+
+    The google.genai SDK ascii-encodes the file's basename internally, so a path
+    containing an em-dash / curly quote / fullwidth punctuation (which describes
+    almost every example-thumbnail filename) raises UnicodeEncodeError. Copying
+    the bytes to a temp file with an ASCII-only name first dodges that.
+    """
+    ext = os.path.splitext(filepath)[1].lower() or ".jpg"
+    mime = _MIME_BY_EXT.get(ext, "image/jpeg")
+    with open(filepath, "rb") as fh:
+        data = fh.read()
+    tmp_path = os.path.join(tempfile.gettempdir(), f"_dt_upload_{uuid.uuid4().hex}{ext}")
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(data)
+        return backend.client.files.upload(
+            file=tmp_path,
+            config=types.UploadFileConfig(display_name=display_name, mime_type=mime),
+        )
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 @dataclass
@@ -104,14 +133,12 @@ def upload_brand_references(backend: GeminiBackend):
     for i, f in enumerate(files):
         filepath = os.path.join(EXAMPLES_DIR, f)
         try:
-            uploaded = backend.client.files.upload(
-                file=filepath,
-                config=types.UploadFileConfig(display_name=f"brand_doom_debates_{i+1:02d}"),
-            )
-            backend.brand_files.append(uploaded)
+            backend.brand_files.append(_upload_local_file(backend, filepath, f"brand_doom_debates_{i+1:02d}"))
         except Exception as e:
             print(f"  [{backend.name}] Failed to upload {f}: {e}")
-    print(f"[{backend.name}] Uploaded {len(backend.brand_files)} brand references.")
+    print(f"[{backend.name}] Uploaded {len(backend.brand_files)}/{len(files)} brand references.")
+    if not backend.brand_files:
+        print(f"  [{backend.name}] WARNING: 0 brand references uploaded — generations will lack brand examples.")
 
 
 def upload_liron_references(backend: GeminiBackend):
@@ -130,14 +157,12 @@ def upload_liron_references(backend: GeminiBackend):
     for i, f in enumerate(files):
         filepath = os.path.join(LIRON_DIR, f)
         try:
-            uploaded = backend.client.files.upload(
-                file=filepath,
-                config=types.UploadFileConfig(display_name=f"liron_{os.path.splitext(f)[0]}"),
-            )
-            backend.liron_files.append(uploaded)
+            backend.liron_files.append(_upload_local_file(backend, filepath, f"liron_{i+1:02d}"))
         except Exception as e:
             print(f"  [{backend.name}] Failed to upload {f}: {e}")
-    print(f"[{backend.name}] Uploaded {len(backend.liron_files)} Liron reaction photos.")
+    print(f"[{backend.name}] Uploaded {len(backend.liron_files)}/{len(files)} Liron reaction photos.")
+    if not backend.liron_files:
+        print(f"  [{backend.name}] WARNING: 0 Liron reaction photos uploaded.")
 
 
 def upload_border_reference(backend: GeminiBackend):
@@ -157,14 +182,10 @@ def upload_border_reference(backend: GeminiBackend):
     for i, f in enumerate(files):
         filepath = os.path.join(assets_dir, f)
         try:
-            uploaded = backend.client.files.upload(
-                file=filepath,
-                config=types.UploadFileConfig(display_name=f"border_ref_{i+1:02d}"),
-            )
-            backend.border_ref_files.append(uploaded)
+            backend.border_ref_files.append(_upload_local_file(backend, filepath, f"border_ref_{i+1:02d}"))
         except Exception as e:
             print(f"  [{backend.name}] Failed to upload {f}: {e}")
-    print(f"[{backend.name}] Uploaded {len(backend.border_ref_files)} border reference images.")
+    print(f"[{backend.name}] Uploaded {len(backend.border_ref_files)}/{len(files)} border reference images.")
 
 
 def upload_files_from_bytes(file_bytes_list, name_prefix):
