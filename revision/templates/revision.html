@@ -87,16 +87,6 @@
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       <label for="genCount" class="hint" style="margin:0;">Count</label>
       <input id="genCount" type="number" min="1" max="50" value="10" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
-      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-left:8px;">
-        <input type="checkbox" id="addBorderCheck">
-        <span class="hint" style="margin:0;">Full Episode border</span>
-      </label>
-      <select id="logoCorner" style="background:#0d1b3e;border:1px solid #0f3460;color:#fff;border-radius:8px;padding:8px;margin-left:4px;">
-        <option value="bottom-left" selected>Logo: Bottom-Left</option>
-        <option value="bottom-right">Logo: Bottom-Right</option>
-        <option value="top-left">Logo: Top-Left</option>
-        <option value="top-right">Logo: Top-Right</option>
-      </select>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
       <button id="cancelBtn" class="btn" style="background:#ef4444;display:none;" onclick="cancelGeneration()">Cancel</button>
       <button id="saveClearBtn" class="btn" style="background:#4ade80;display:none;" onclick="saveAndClear()">💾 Save & Clear</button>
@@ -126,10 +116,15 @@
     <h3 style="margin-top:0;">Swap or adjust a face before revision</h3>
     <label>Face change prompt</label>
     <textarea id="faceChangePrompt" placeholder="e.g. change the face on the right to look like the enclosed man with a skeptical expression"></textarea>
+
     <input type="file" id="faceRefFile" accept="image/*" style="display:none;">
-    <span id="faceRefName" style="display:none;"></span>
-    <div id="faceRefPasteZone" style="display:none;"></div>
-    <div id="faceRefPreview" style="display:none;"></div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+      <button type="button" class="btn" style="background:#0f3460;" onclick="document.getElementById('faceRefFile').click()">+ Attach New Face Reference</button>
+      <span id="faceRefName" class="hint"></span>
+    </div>
+    <div class="hint" style="margin-top:6px;text-transform:none;">Upload (or paste / drop) a photo of the face you want — required when your prompt refers to "this face" / "this man". With only a painted mask and no reference, GPT just regenerates the masked area from the text alone.</div>
+    <div id="faceRefPasteZone" class="paste-zone" tabindex="0">Drop the new-face image here, or paste (Ctrl+V / ⌘V)</div>
+    <div id="faceRefPreview" class="preview-grid"></div>
 
     <label style="margin-top:14px;">Paint the mask <span class="hint" style="text-transform:none;">(paint over the area to change — only painted pixels get edited)</span></label>
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px; margin-bottom:8px;">
@@ -155,7 +150,7 @@
     <div class="hint" style="margin-top:8px;">Paint red over the area you want changed. If auto-detect is on, detected faces show as blue outlines — click one to auto-mask it. Only the painted area gets sent to GPT for inpainting.</div>
   </div>
 
-  <div class="card">
+  <div class="card" id="logsCard">
     <h3 style="margin-top:0;">Live Logs</h3>
     <div id="logBox" class="logs"></div>
     <details style="margin-top:8px;">
@@ -167,7 +162,7 @@
     <div id="costText" class="costline"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="resultsCard">
     <h3 style="margin-top:0;">Results</h3>
     <div id="resultsGrid" class="grid"></div>
   </div>
@@ -175,7 +170,10 @@
   <div style="text-align:center;padding:24px 0 8px;color:#555;font-size:11px;">{{ git_version }}</div>
 
 <script>
-const SESSION_ID = crypto.randomUUID();
+// Per-tab session id; survives a same-tab refresh so reloading mid-run reattaches
+// to the in-progress generation instead of orphaning it.
+const SESSION_ID = sessionStorage.getItem('revSessionId') || crypto.randomUUID();
+sessionStorage.setItem('revSessionId', SESSION_ID);
 console.log('[REVISION] session_id=' + SESSION_ID);
 
 let pollInterval = null;
@@ -469,7 +467,6 @@ function openApiPreviewWindow() {
   loadPromptDefaults().then(() => {
     const revisionContext = document.getElementById('revisionContextText').value || defaultRevisionContext;
     const userPrompt = document.getElementById('feedback').value.trim() || '[your revision prompt will appear here]';
-    const addBorder = document.getElementById('addBorderCheck').checked;
     const attachCount = pastedImages.length + attachedImages.length;
 
     // Build the revision prompt preview with placeholders filled
@@ -531,11 +528,6 @@ function openApiPreviewWindow() {
       <div class="block grey">
         <div class="block-label">CONTENT[last] &mdash; Liron References (conditional)</div>
         <div class="placeholder">Only included if prompt mentions "liron" (up to 2 images)</div>
-      </div>
-
-      <div class="block grey ${addBorder ? '' : 'hidden'}">
-        <div class="block-label">Border Composite (Pillow)</div>
-        <div class="placeholder">Deterministic alpha-composite — no API call. Logo corner: ${document.getElementById('logoCorner').value}</div>
       </div>
 
       <div class="btn-row">
@@ -840,8 +832,6 @@ async function runRevision() {
   for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
   fd.append('count', String(requestedCount));
-  fd.append('add_border', document.getElementById('addBorderCheck').checked ? '1' : '0');
-  fd.append('logo_corner', document.getElementById('logoCorner').value);
   const facePrompt = (document.getElementById('faceChangePrompt') || {}).value || '';
   if (facePrompt && faceRefFile) {
     fd.append('face_change_prompt', facePrompt);
@@ -907,35 +897,56 @@ function renderLogs(logs) {
   box.scrollTop = box.scrollHeight;
 }
 
+let pollActive = false;
+let pollEpoch = 0;   // bumped on each (re)start so stale chains self-terminate
+
+function stopPolling() {
+  pollActive = false;
+  pollEpoch++;
+  if (pollInterval) { clearTimeout(pollInterval); pollInterval = null; }
+}
+
 function startPolling() {
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(async () => {
-    try {
-      const r = await fetch('/status?page=revision&session_id=' + SESSION_ID);
-      const d = await r.json();
-      (d.images || []).forEach(addImageCard);
-      renderLogs(d.log || []);
-      document.getElementById('statusText').textContent = d.running
-        ? `Generating ${d.completed}/${d.total}... (${d.errors || 0} errors)`
-        : '';
-      const runCost = (typeof d.cost === 'number') ? d.cost : 0;
-      const sessionCost = (typeof d.session_cost === 'number') ? d.session_cost : 0;
-      document.getElementById('costText').textContent = `API spend — run: $${runCost.toFixed(2)} | session: $${sessionCost.toFixed(2)}`;
+  stopPolling();          // bumps pollEpoch, killing any stale in-flight chain
+  pollActive = true;
+  pollTick(pollEpoch);
+}
 
-      // Show Save & Clear when there's at least one result and not actively generating
-      const saveBtn = document.getElementById('saveClearBtn');
-      if (saveBtn) {
-        const hasImages = (d.images && d.images.length > 0);
-        saveBtn.style.display = (hasImages && !d.running) ? '' : 'none';
-      }
+async function pollTick(epoch) {
+  if (epoch !== pollEpoch) return;  // superseded
+  try {
+    // /status is a server-side long-poll (up to ~12s). Chaining the next tick
+    // only after this one settles keeps at most one /status request in flight
+    // — avoids piling up requests against the browser's ~6-connections-per-origin
+    // limit (shared with the main /  page) and the single Cloud Run instance.
+    const r = await fetch('/status?page=revision&session_id=' + SESSION_ID);
+    const d = await r.json();
+    if (epoch !== pollEpoch) return;
+    (d.images || []).forEach(addImageCard);
+    renderLogs(d.log || []);
+    document.getElementById('statusText').textContent = d.running
+      ? `Generating ${d.completed}/${d.total}... (${d.errors || 0} errors)`
+      : '';
+    const runCost = (typeof d.cost === 'number') ? d.cost : 0;
+    const sessionCost = (typeof d.session_cost === 'number') ? d.session_cost : 0;
+    document.getElementById('costText').textContent = `API spend — run: $${runCost.toFixed(2)} | session: $${sessionCost.toFixed(2)}`;
 
-      if (d.done && !d.running) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-        document.getElementById('cancelBtn').style.display = 'none';
-      }
-    } catch (_) {}
-  }, 1000);
+    // Show Save & Clear when there's at least one result and not actively generating
+    const saveBtn = document.getElementById('saveClearBtn');
+    if (saveBtn) {
+      const hasImages = (d.images && d.images.length > 0);
+      saveBtn.style.display = (hasImages && !d.running) ? '' : 'none';
+    }
+
+    if (d.done && !d.running) {
+      stopPolling();
+      document.getElementById('cancelBtn').style.display = 'none';
+      return;
+    }
+  } catch (_) {}
+  if (pollActive && epoch === pollEpoch) {
+    pollInterval = setTimeout(() => pollTick(epoch), 1000);
+  }
 }
 
 // ---------- Save & Clear ----------
@@ -972,13 +983,10 @@ function resetGeneratedState() {
   if (saveBtn) saveBtn.style.display = 'none';
 
   // KEEP: baseAttachmentFile, pastedImages, attachedImages (so basePreview + refsPreview stay)
-  // KEEP: feedback textarea, genCount, addBorderCheck
+  // KEEP: feedback textarea, genCount
 
   // Stop any active polling (a new Generate will restart it)
-  if (pollInterval) {
-    clearInterval(pollInterval);
-    pollInterval = null;
-  }
+  stopPolling();
 }
 
 function showSaveToast(folderName, folderUrl, fileCount) {
@@ -1006,21 +1014,18 @@ function setMode(mode) {
   currentMode = mode;
   const revBtn = document.getElementById('modeRevision');
   const borBtn = document.getElementById('modeBorder');
-  const step2 = document.getElementById('step2Card');
-  const faceCard = document.getElementById('faceChangeCard');
+  const revisionOnly = [document.getElementById('step2Card'), document.getElementById('faceChangeCard'), document.getElementById('logsCard'), document.getElementById('resultsCard')];
   const borderOnlyCard = document.getElementById('borderOnlyCard');
 
   if (mode === 'border') {
     revBtn.style.background = '#0d1b3e'; revBtn.style.color = '#6b7fa8';
     borBtn.style.background = '#4ade80'; borBtn.style.color = '#000';
-    step2.style.opacity = '0.3'; step2.style.pointerEvents = 'none';
-    faceCard.style.opacity = '0.3'; faceCard.style.pointerEvents = 'none';
+    revisionOnly.forEach(el => el.style.display = 'none');
     borderOnlyCard.style.display = '';
   } else {
     revBtn.style.background = '#e94560'; revBtn.style.color = '#fff';
     borBtn.style.background = '#0d1b3e'; borBtn.style.color = '#6b7fa8';
-    step2.style.opacity = '1'; step2.style.pointerEvents = '';
-    faceCard.style.opacity = '1'; faceCard.style.pointerEvents = '';
+    revisionOnly.forEach(el => el.style.display = '');
     borderOnlyCard.style.display = 'none';
   }
 }
@@ -1054,6 +1059,7 @@ async function runBorderOnly() {
       return;
     }
     status.textContent = 'Border applied — added to results.';
+    activeOutputDir = '';
     addImageCard({ idx: data.idx || 1, path: data.path });
   } catch (e) {
     status.textContent = 'Error: ' + e;

@@ -63,11 +63,14 @@ def index():
 def get_status():
     _st, _lk = _get_session()
 
-    # Long-poll: hold the request open while nothing changes, up to ~25s.
+    # Long-poll: hold the request open while nothing changes, up to ~12s.
     # This keeps continuous HTTP activity during generation so Cloud Run
     # allocates CPU to the background generator thread. (On always-on
     # hosts like Render, this has no ill effect — polls just arrive less
     # frequently.) Breaks immediately when any progress field changes.
+    # Kept short-ish so a parked gthread worker frees up quickly — the client
+    # re-polls on a self-chaining timer, so at most one /status is in flight
+    # per page.
     def _snapshot():
         with _lk:
             return (
@@ -81,7 +84,7 @@ def get_status():
             )
 
     initial = _snapshot()
-    deadline = time.time() + 25.0
+    deadline = time.time() + 12.0
     while time.time() < deadline:
         if _snapshot() != initial:
             break

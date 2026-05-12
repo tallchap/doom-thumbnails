@@ -103,6 +103,10 @@ def revise_upload():
     face_prompt = fields.get("face_change_prompt", "").strip()
     face_ref_files = files.get("face_ref_image", [])
     face_mask_files = files.get("face_mask_image", [])
+    if face_prompt and not face_ref_files and not face_mask_files:
+        return jsonify({"error": "Face change prompt was set but no new-face reference image "
+                                 "and no painted mask were provided — attach a face reference "
+                                 "(or paint a mask), or clear the face change prompt."})
     face_change_active = face_prompt and (face_ref_files or face_mask_files)
     face_changed_bases = []
 
