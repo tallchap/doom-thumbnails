@@ -341,7 +341,7 @@ def gpt_inpaint():
 
     run_gpt_inpaint(
         thumb_bytes, mask_bytes, ref_bytes, prompt, count, round_dir,
-        target_status=_st, target_lock=_lk, label=label,
+        target_status=_st, target_lock=_lk, label=label, mode=mode,
     )
 
     return jsonify({"ok": True, "output_dir": round_dir, "count": count})

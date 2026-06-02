@@ -478,13 +478,97 @@ def apply_face_change(img_data: bytes, face_prompt: str, ref_face_data: bytes = 
     return call_face_change(client, thumb_bytes, mask_bytes, ref_bytes, face_prompt)
 
 
+def mask_editable_bbox(mask_bytes):
+    """Bounding box (x0,y0,x1,y1) of the EDITABLE region of an RGBA mask, in 1280x720
+    space. Editable = transparent (alpha < 128) — matches OpenAI's images.edit
+    convention and getMaskBlob() (painted strokes are made transparent). None if the
+    mask has no transparent pixels."""
+    import numpy as np
+    m = Image.open(io.BytesIO(mask_bytes)).convert("RGBA").resize((1280, 720), Image.LANCZOS)
+    alpha = np.array(m.split()[-1])
+    ys, xs = np.where(alpha < 128)
+    if len(xs) == 0:
+        return None
+    return (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+
+def composite_ref_into_mask(thumb_bytes, ref_bytes, mask_bytes):
+    """Paste the reference image so it COVERS the painted (transparent) bbox of the mask,
+    on top of the base thumbnail. This makes the painted region the literal placement
+    target — gpt-image-2 then only has to blend/refine inside the mask. Returns new PNG
+    bytes, or the original thumb_bytes if there's nothing to paste."""
+    if not ref_bytes or not mask_bytes:
+        return thumb_bytes
+    bbox = mask_editable_bbox(mask_bytes)
+    if bbox is None:
+        return thumb_bytes
+    x0, y0, x1, y1 = bbox
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    thumb = Image.open(io.BytesIO(thumb_bytes)).convert("RGB").resize((1280, 720), Image.LANCZOS)
+    ref = Image.open(io.BytesIO(ref_bytes)).convert("RGB")
+    rw, rh = ref.size
+    # cover-fit: scale so ref fully covers the bbox, then center-crop to the bbox size
+    scale = max(bw / rw, bh / rh)
+    nw, nh = max(1, int(rw * scale)), max(1, int(rh * scale))
+    ref_r = ref.resize((nw, nh), Image.LANCZOS)
+    left, top = (nw - bw) // 2, (nh - bh) // 2
+    ref_crop = ref_r.crop((left, top, left + bw, top + bh))
+    thumb.paste(ref_crop, (x0, y0))
+    buf = io.BytesIO()
+    thumb.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def build_gpt_edit_prompt(mode, user_prompt, has_ref, pasted):
+    """Wrap the user's prompt with explicit gpt-image-2 instructions so the painted
+    (transparent) mask region is treated as the WHERE/WHAT, and everything else is
+    preserved. `pasted` means the reference was already composited into the region."""
+    up = (user_prompt or "").strip()
+    keep = ("Keep everything OUTSIDE the edited region pixel-for-pixel identical — all text, "
+            "graphics, other people, background, colors and composition must not change.")
+    if mode == "face_swap":
+        if pasted:
+            return (
+                "This is a face/head swap. The new person's face has already been roughly pasted "
+                "into the edited (transparent-masked) region. Redraw ONLY that region so the pasted "
+                "face blends in photorealistically: preserve the pasted person's identity and "
+                "facial features, but harmonize skin tone, lighting direction, shadows, color "
+                "grade, head angle and grain with the surrounding image so it looks natural and "
+                "seamless. " + keep + (f" Extra direction: {up}" if up else "")
+            )
+        if has_ref:
+            return (
+                "Face swap: replace the face inside the edited (transparent-masked) region with the "
+                "face from the attached reference image, matching skin tone, lighting, angle and "
+                "grain so it is seamless. " + keep + (f" Direction: {up}" if up else "")
+            )
+        return (
+            "Redraw ONLY the edited (transparent-masked) region: " + (up or "regenerate this face") +
+            ". " + keep
+        )
+    # object mode
+    if pasted:
+        return (
+            "A reference image has been roughly pasted into the edited (transparent-masked) region. "
+            "Redraw ONLY that region to blend the pasted content in seamlessly" +
+            (f", following: {up}" if up else "") + ". " + keep
+        )
+    return (
+        "Edit ONLY the edited (transparent-masked) region: " + (up or "revise this area") +
+        ". If a reference image is attached, use it as the guide for what to place there. " + keep
+    )
+
+
 def run_gpt_inpaint(thumb_bytes, mask_bytes, ref_bytes, prompt, count, output_dir,
-                    target_status=None, target_lock=None, label="GPT edit"):
+                    target_status=None, target_lock=None, label="GPT edit", mode="object"):
     """Run N concurrent gpt-image-2 inpaint calls in a background thread.
 
     Used by the standalone Face Swap and Object Edits tabs on /revision. Mirrors
     run_generation's session-state contract so the existing /status poll surfaces
     results into the page with no extra plumbing. Pure OpenAI — no Gemini pass.
+
+    When a reference image is supplied, it is composited into the painted region first
+    (so the paint controls placement), and gpt-image-2 only blends/refines the region.
     """
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
@@ -505,9 +589,24 @@ def run_gpt_inpaint(thumb_bytes, mask_bytes, ref_bytes, prompt, count, output_di
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # Composite the reference into the painted region so the paint is the placement
+    # target. If we paste it in, don't ALSO pass it as a 2nd image (avoid duplicates).
+    edit_thumb, edit_ref, pasted = thumb_bytes, ref_bytes, False
+    if ref_bytes and mask_bytes:
+        try:
+            composited = composite_ref_into_mask(thumb_bytes, ref_bytes, mask_bytes)
+            if composited is not thumb_bytes:
+                edit_thumb, edit_ref, pasted = composited, None, True
+        except Exception as e:
+            with _lk:
+                _st["log"].append(f"{label}: composite step skipped ({str(e)[:120]})")
+    final_prompt = build_gpt_edit_prompt(mode, prompt, bool(ref_bytes), pasted)
+    with _lk:
+        _st["log"].append(f"{label}: reference {'pasted into painted region + refine' if pasted else ('attached as guide' if edit_ref else 'none')}")
+
     def _run():
         try:
-            results = asyncio.run(async_face_changes(count, thumb_bytes, mask_bytes, ref_bytes, prompt))
+            results = asyncio.run(async_face_changes(count, edit_thumb, mask_bytes, edit_ref, final_prompt))
             for r in results:
                 if isinstance(r, Exception):
                     with _lk:
