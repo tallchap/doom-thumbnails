@@ -478,6 +478,69 @@ def apply_face_change(img_data: bytes, face_prompt: str, ref_face_data: bytes = 
     return call_face_change(client, thumb_bytes, mask_bytes, ref_bytes, face_prompt)
 
 
+def run_gpt_inpaint(thumb_bytes, mask_bytes, ref_bytes, prompt, count, output_dir,
+                    target_status=None, target_lock=None, label="GPT edit"):
+    """Run N concurrent gpt-image-2 inpaint calls in a background thread.
+
+    Used by the standalone Face Swap and Object Edits tabs on /revision. Mirrors
+    run_generation's session-state contract so the existing /status poll surfaces
+    results into the page with no extra plumbing. Pure OpenAI — no Gemini pass.
+    """
+    _st = target_status if target_status is not None else main_status
+    _lk = target_lock if target_lock is not None else main_status_lock
+
+    with _lk:
+        _st["running"] = True
+        _st["cancel_requested"] = False
+        _st["phase"] = "gpt_inpaint"
+        _st["total"] = count
+        _st["completed"] = 0
+        _st["errors"] = 0
+        _st["log"] = [f"{label}: firing {count} parallel gpt-image-2 call(s) via asyncio.gather..."]
+        _st["images"] = []
+        _st["idea_groups"] = {}
+        _st["cost"] = 0.0
+        _st["done"] = False
+        _st["output_dir"] = output_dir
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    def _run():
+        try:
+            results = asyncio.run(async_face_changes(count, thumb_bytes, mask_bytes, ref_bytes, prompt))
+            for r in results:
+                if isinstance(r, Exception):
+                    with _lk:
+                        _st["errors"] += 1
+                        _st["log"].append(f"{label} failed: {str(r)[:150]}")
+                    continue
+                idx, img_bytes = r
+                filename = f"gpt_{idx:03d}.png"
+                path = os.path.join(output_dir, filename)
+                with open(path, "wb") as f:
+                    f.write(img_bytes)
+                with _lk:
+                    n = len(_st["images"]) + 1
+                    _st["images"].append({"idx": n, "path": path})
+                    _st["idea_groups"].setdefault(0, []).append({"idx": n, "path": path})
+                    _st["completed"] += 1
+                    _st["cost"] += COST_PER_IMAGE
+                    _st["session_cost"] = _st.get("session_cost", 0.0) + COST_PER_IMAGE
+                    _st["log"].append(f"[{_st['completed']}/{count}] {filename} OK")
+        except Exception as e:
+            with _lk:
+                _st["log"].append(f"FATAL ERROR: {e}")
+        finally:
+            with _lk:
+                _st["running"] = False
+                _st["done"] = True
+                if len(_st["log"]) > MAX_LOG_ENTRIES:
+                    _st["log"] = _st["log"][-MAX_LOG_ENTRIES:]
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
 # ----- Pillow Border Composite (revision mode) -----
 
 _border_frame_cache = None

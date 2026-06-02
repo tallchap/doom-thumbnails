@@ -55,6 +55,8 @@
   <div style="display:flex;gap:0;margin-bottom:16px;border-radius:10px;overflow:hidden;border:2px solid #0f3460;">
     <button id="modeRevision" class="btn" onclick="setMode('revision')" style="flex:1;border-radius:0;font-size:14px;background:#e94560;color:#fff;">🎨 AI Revision</button>
     <button id="modeBorder" class="btn" onclick="setMode('border')" style="flex:1;border-radius:0;font-size:14px;background:#0d1b3e;color:#6b7fa8;border-left:1px solid #0f3460;">🖼 Border Only</button>
+    <button id="modeFaceSwap" class="btn" onclick="setMode('faceswap')" style="flex:1;border-radius:0;font-size:14px;background:#0d1b3e;color:#6b7fa8;border-left:1px solid #0f3460;">🔁 Face Swap</button>
+    <button id="modeObject" class="btn" onclick="setMode('object')" style="flex:1;border-radius:0;font-size:14px;background:#0d1b3e;color:#6b7fa8;border-left:1px solid #0f3460;">🖌 Object Edits</button>
   </div>
 
   <div class="card base-card">
@@ -111,9 +113,10 @@
     <div id="borderOnlyStatus" class="status"></div>
   </div>
 
-  <div class="card" id="faceChangeCard" style="border-color:#8b5cf6;">
-    <div class="section-kicker" style="color:#a78bfa;">FACE CHANGE (optional)</div>
-    <h3 style="margin-top:0;">Swap or adjust a face before revision</h3>
+  <!-- Face Swap tab (standalone, OpenAI gpt-image-2) -->
+  <div class="card" id="faceSwapCard" style="border-color:#8b5cf6;display:none;">
+    <div class="section-kicker" style="color:#a78bfa;">FACE SWAP · OpenAI gpt-image-2</div>
+    <h3 style="margin-top:0;">Swap or adjust a face</h3>
     <label>Face change prompt</label>
     <textarea id="faceChangePrompt" placeholder="e.g. change the face on the right to look like the enclosed man with a skeptical expression"></textarea>
 
@@ -126,7 +129,43 @@
     <div id="faceRefPasteZone" class="paste-zone" tabindex="0">Drop the new-face image here, or paste (Ctrl+V / ⌘V)</div>
     <div id="faceRefPreview" class="preview-grid"></div>
 
-    <label style="margin-top:14px;">Paint the mask <span class="hint" style="text-transform:none;">(paint over the area to change — only painted pixels get edited)</span></label>
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="faceSwapCount" class="hint" style="margin:0;">Quantity</label>
+      <input id="faceSwapCount" type="number" min="1" max="10" value="4" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
+      <button id="faceSwapBtn" class="btn" style="background:#8b5cf6;" onclick="runFaceSwap()">Generate Face Swap</button>
+      <span class="hint" style="margin-left:4px;">Always parallel · OpenAI · no Gemini pass</span>
+    </div>
+    <div id="faceSwapStatus" class="status"></div>
+  </div>
+
+  <!-- Object Edits tab (standalone, OpenAI gpt-image-2) -->
+  <div class="card" id="objectEditCard" style="border-color:#38bdf8;display:none;">
+    <div class="section-kicker" style="color:#7dd3fc;">OBJECT EDITS · OpenAI gpt-image-2</div>
+    <h3 style="margin-top:0;">Paint a region and revise it</h3>
+    <label>Describe how to revise the painted region</label>
+    <textarea id="objectEditPrompt" placeholder="e.g. replace the coffee mug with a red apple; turn the background into a stormy sky"></textarea>
+
+    <input type="file" id="objRefFile" accept="image/*" style="display:none;">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;">
+      <button type="button" class="btn" style="background:#0f3460;" onclick="document.getElementById('objRefFile').click()">+ Attach Reference (optional)</button>
+      <span id="objRefName" class="hint"></span>
+    </div>
+    <div class="hint" style="margin-top:6px;text-transform:none;">Optional — attach (or paste / drop) an image to guide what the painted region should become.</div>
+    <div id="objRefPasteZone" class="paste-zone" tabindex="0">Drop a reference image here, or paste (Ctrl+V / ⌘V)</div>
+    <div id="objRefPreview" class="preview-grid"></div>
+
+    <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <label for="objectEditCount" class="hint" style="margin:0;">Quantity</label>
+      <input id="objectEditCount" type="number" min="1" max="10" value="4" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
+      <button id="objectEditBtn" class="btn" style="background:#38bdf8;color:#000;font-weight:800;" onclick="runObjectEdit()">Generate Object Edit</button>
+      <span class="hint" style="margin-left:4px;">Paint a region first · Always parallel · OpenAI</span>
+    </div>
+    <div id="objectEditStatus" class="status"></div>
+  </div>
+
+  <!-- Shared mask canvas (Face Swap + Object Edits) -->
+  <div class="card" id="maskCard" style="border-color:#8b5cf6;display:none;">
+    <label style="margin-top:0;">Paint the mask <span class="hint" style="text-transform:none;">(paint over the area to change — only painted pixels get edited)</span></label>
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:6px; margin-bottom:8px;">
       <button type="button" class="btn btn-sm" style="background:#8b5cf6;" onclick="loadMaskCanvas()">Load Thumbnail to Canvas</button>
       <label class="hint" style="margin:0;">Brush size</label>
@@ -205,6 +244,26 @@ function clearFaceRef() {
   document.getElementById('faceRefFile').value = '';
   document.getElementById('faceRefName').textContent = '';
   document.getElementById('faceRefPreview').innerHTML = '';
+}
+
+let objRefFile = null;
+
+function setObjRef(file) {
+  objRefFile = file;
+  const nameEl = document.getElementById('objRefName');
+  const previewEl = document.getElementById('objRefPreview');
+  if (objRefFile) {
+    nameEl.textContent = objRefFile.name || 'pasted image';
+    const url = URL.createObjectURL(objRefFile);
+    previewEl.innerHTML = '<div class="preview"><img src="' + url + '"><div class="cap"><span>' + esc(objRefFile.name || 'obj_ref.png') + '</span><button class="xbtn" onclick="clearObjRef()">×</button></div></div>';
+  }
+}
+
+function clearObjRef() {
+  objRefFile = null;
+  document.getElementById('objRefFile').value = '';
+  document.getElementById('objRefName').textContent = '';
+  document.getElementById('objRefPreview').innerHTML = '';
 }
 
 // ----- Mask Canvas -----
@@ -763,11 +822,11 @@ if (faceRefPasteZone) {
     if (!pasted.length) return;
     e.preventDefault();
     setFaceRef(pasted[0]);
-    document.getElementById('statusText').textContent = 'Face reference pasted.';
+    document.getElementById('faceSwapStatus').textContent = 'Face reference pasted.';
   });
   setupDropZone(faceRefPasteZone, (dropped) => {
     setFaceRef(dropped[0]);
-    document.getElementById('statusText').textContent = 'Face reference dropped.';
+    document.getElementById('faceSwapStatus').textContent = 'Face reference dropped.';
   });
 }
 
@@ -779,7 +838,43 @@ if (facePromptEl) {
     if (!pasted.length) return;
     e.preventDefault();
     setFaceRef(pasted[0]);
-    document.getElementById('statusText').textContent = 'Face reference pasted from prompt box.';
+    document.getElementById('faceSwapStatus').textContent = 'Face reference pasted from prompt box.';
+  });
+}
+
+// Object Edits reference: file input, paste zone, drop zone
+const objRefInput = document.getElementById('objRefFile');
+if (objRefInput) {
+  objRefInput.addEventListener('change', (e) => {
+    if (e.target.files[0]) setObjRef(e.target.files[0]);
+  });
+}
+
+const objRefPasteZone = document.getElementById('objRefPasteZone');
+if (objRefPasteZone) {
+  objRefPasteZone.addEventListener('focus', () => objRefPasteZone.classList.add('active'));
+  objRefPasteZone.addEventListener('blur', () => objRefPasteZone.classList.remove('active'));
+  objRefPasteZone.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    setObjRef(pasted[0]);
+    document.getElementById('objectEditStatus').textContent = 'Reference pasted.';
+  });
+  setupDropZone(objRefPasteZone, (dropped) => {
+    setObjRef(dropped[0]);
+    document.getElementById('objectEditStatus').textContent = 'Reference dropped.';
+  });
+}
+
+const objPromptEl = document.getElementById('objectEditPrompt');
+if (objPromptEl) {
+  objPromptEl.addEventListener('paste', (e) => {
+    const pasted = getPastedImageFiles(e);
+    if (!pasted.length) return;
+    e.preventDefault();
+    setObjRef(pasted[0]);
+    document.getElementById('objectEditStatus').textContent = 'Reference pasted from prompt box.';
   });
 }
 
@@ -835,17 +930,6 @@ async function runRevision() {
   for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
   fd.append('count', String(requestedCount));
-  const facePrompt = (document.getElementById('faceChangePrompt') || {}).value || '';
-  if (facePrompt && faceRefFile) {
-    fd.append('face_change_prompt', facePrompt);
-    fd.append('face_ref_image', faceRefFile, faceRefFile.name || 'face_ref.png');
-  }
-  // If mask was hand-drawn, send it (overrides auto-detection)
-  if (facePrompt && maskStrokes.length > 0) {
-    if (!fd.has('face_change_prompt')) fd.append('face_change_prompt', facePrompt);
-    const maskBlob = await getMaskBlob();
-    if (maskBlob) fd.append('face_mask_image', maskBlob, 'mask.png');
-  }
   const customRevisionContext = (document.getElementById('revisionContextText') || {}).value || '';
   if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
 
@@ -864,6 +948,85 @@ async function runRevision() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Generate';
+  }
+}
+
+// ----- Face Swap + Object Edits (standalone OpenAI gpt-image-2) -----
+
+function appendBase(fd) {
+  if (followUpBasePath) {
+    fd.append('base_path', followUpBasePath);
+  } else {
+    fd.append('base_thumbnail', baseAttachmentFile, baseAttachmentFile.name || 'base.png');
+  }
+}
+
+async function runFaceSwap() {
+  const prompt = document.getElementById('faceChangePrompt').value.trim();
+  if (!prompt) { alert('Enter a face change prompt.'); return; }
+  if (!followUpBasePath && !baseAttachmentFile) { alert('Attach a base thumbnail (Step 1).'); return; }
+  if (!faceRefFile && maskStrokes.length === 0) {
+    alert('Attach a new-face reference and/or paint a mask.');
+    return;
+  }
+
+  const count = Math.max(1, Math.min(10, parseInt(document.getElementById('faceSwapCount').value || '4', 10) || 4));
+  const btn = document.getElementById('faceSwapBtn');
+  const status = document.getElementById('faceSwapStatus');
+
+  const fd = new FormData();
+  fd.append('mode', 'face_swap');
+  fd.append('prompt', prompt);
+  fd.append('count', String(count));
+  appendBase(fd);
+  if (faceRefFile) fd.append('ref_image', faceRefFile, faceRefFile.name || 'face_ref.png');
+  if (maskStrokes.length > 0) {
+    const maskBlob = await getMaskBlob();
+    if (maskBlob) fd.append('mask_image', maskBlob, 'mask.png');
+  }
+  await submitGptInpaint(fd, count, btn, status, 'Generate Face Swap');
+}
+
+async function runObjectEdit() {
+  const prompt = document.getElementById('objectEditPrompt').value.trim();
+  if (!prompt) { alert('Describe how to revise the painted region.'); return; }
+  if (!followUpBasePath && !baseAttachmentFile) { alert('Attach a base thumbnail (Step 1).'); return; }
+  if (maskStrokes.length === 0) { alert('Paint a region on the canvas first (Load Thumbnail to Canvas, then paint).'); return; }
+
+  const count = Math.max(1, Math.min(10, parseInt(document.getElementById('objectEditCount').value || '4', 10) || 4));
+  const btn = document.getElementById('objectEditBtn');
+  const status = document.getElementById('objectEditStatus');
+
+  const fd = new FormData();
+  fd.append('mode', 'object');
+  fd.append('prompt', prompt);
+  fd.append('count', String(count));
+  appendBase(fd);
+  if (objRefFile) fd.append('ref_image', objRefFile, objRefFile.name || 'obj_ref.png');
+  const maskBlob = await getMaskBlob();
+  if (maskBlob) fd.append('mask_image', maskBlob, 'mask.png');
+  await submitGptInpaint(fd, count, btn, status, 'Generate Object Edit');
+}
+
+async function submitGptInpaint(fd, count, btn, status, btnLabel) {
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  status.textContent = 'Submitting ' + count + ' parallel GPT call(s)...';
+  try {
+    const resp = await fetch('/gpt_inpaint?session_id=' + SESSION_ID, { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { status.textContent = 'Error: ' + data.error; alert(data.error); return; }
+    activeOutputDir = data.output_dir || '';
+    // Fresh result set for this batch — clear the grid + dedup set.
+    document.getElementById('resultsGrid').innerHTML = '';
+    seen = new Set();
+    status.textContent = 'Running ' + count + ' parallel GPT call(s)...';
+    startPolling();
+  } catch (e) {
+    status.textContent = 'Error: ' + e;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = btnLabel;
   }
 }
 
@@ -1016,24 +1179,42 @@ function showSaveToast(folderName, folderUrl, fileCount) {
 
 let currentMode = 'revision';
 
+// Each mode → its toggle button + active colors. Inactive buttons fall back to
+// the dark base color.
+const MODE_BUTTONS = {
+  revision: { id: 'modeRevision', bg: '#e94560', fg: '#fff' },
+  border:   { id: 'modeBorder',   bg: '#4ade80', fg: '#000' },
+  faceswap: { id: 'modeFaceSwap', bg: '#8b5cf6', fg: '#fff' },
+  object:   { id: 'modeObject',   bg: '#38bdf8', fg: '#000' },
+};
+
 function setMode(mode) {
   currentMode = mode;
-  const revBtn = document.getElementById('modeRevision');
-  const borBtn = document.getElementById('modeBorder');
-  const revisionOnly = [document.getElementById('step2Card'), document.getElementById('faceChangeCard'), document.getElementById('logsCard'), document.getElementById('resultsCard')];
-  const borderOnlyCard = document.getElementById('borderOnlyCard');
 
-  if (mode === 'border') {
-    revBtn.style.background = '#0d1b3e'; revBtn.style.color = '#6b7fa8';
-    borBtn.style.background = '#4ade80'; borBtn.style.color = '#000';
-    revisionOnly.forEach(el => el.style.display = 'none');
-    borderOnlyCard.style.display = '';
-  } else {
-    revBtn.style.background = '#e94560'; revBtn.style.color = '#fff';
-    borBtn.style.background = '#0d1b3e'; borBtn.style.color = '#6b7fa8';
-    revisionOnly.forEach(el => el.style.display = '');
-    borderOnlyCard.style.display = 'none';
+  for (const key in MODE_BUTTONS) {
+    const btn = document.getElementById(MODE_BUTTONS[key].id);
+    if (!btn) continue;
+    if (key === mode) {
+      btn.style.background = MODE_BUTTONS[key].bg;
+      btn.style.color = MODE_BUTTONS[key].fg;
+    } else {
+      btn.style.background = '#0d1b3e';
+      btn.style.color = '#6b7fa8';
+    }
   }
+
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? '' : 'none';
+  };
+  show('step2Card', mode === 'revision');
+  show('borderOnlyCard', mode === 'border');
+  show('faceSwapCard', mode === 'faceswap');
+  show('objectEditCard', mode === 'object');
+  show('maskCard', mode === 'faceswap' || mode === 'object');
+  // The output library + logs follow you across every tab.
+  show('logsCard', true);
+  show('resultsCard', true);
 }
 
 async function runBorderOnly() {

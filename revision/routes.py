@@ -15,7 +15,10 @@ from shared.gemini_client import get_primary_backend, get_all_backends, upload_f
 from shared.drive_client import upload_episode_folder
 from shared.helpers import parse_form_or_multipart, reset_generation_state, letter_for_index, safe_session_id
 from shared.state import get_session
-from thumbnails.generator import apply_border_pillow, build_revision_prompts, run_generation
+from thumbnails.generator import (
+    apply_border_pillow, build_revision_prompts, run_generation,
+    prepare_face_change, run_gpt_inpaint,
+)
 
 
 revision_bp = Blueprint("revision", __name__, template_folder="templates")
@@ -251,6 +254,97 @@ def border_only():
         _st["log"].append(f"Border-only applied (logo: {logo_corner})")
 
     return jsonify({"ok": True, "path": out_path, "idx": idx})
+
+
+@revision_bp.route("/gpt_inpaint", methods=["POST"])
+@require_auth
+def gpt_inpaint():
+    """Standalone GPT (gpt-image-2) inpainting for the Face Swap and Object Edits tabs.
+
+    mode=face_swap : swap a face using a face reference and/or painted mask. If no
+                     mask is painted, prepare_face_change auto-detects the face.
+    mode=object    : revise the painted region per the prompt. A painted mask is
+                     required; an optional reference image guides the result.
+
+    Pure OpenAI — no Gemini pass. Always runs `count` calls in parallel.
+    """
+    from config import OPENAI_API_KEY
+
+    _st, _lk = _get_revision_session()
+    with _lk:
+        if _st["running"]:
+            return jsonify({"error": "Generation already in progress"})
+
+    if not OPENAI_API_KEY:
+        return jsonify({"error": "OPENAI_API_KEY is not set on the server — GPT image edits are disabled."})
+
+    fields, files = parse_form_or_multipart(request)
+    mode = fields.get("mode", "object").strip()
+    prompt = fields.get("prompt", "").strip()
+    base_files = files.get("base_thumbnail", [])
+    base_path = fields.get("base_path", "").strip()
+    mask_files = files.get("mask_image", [])
+    ref_files = files.get("ref_image", [])
+    try:
+        count = int(fields.get("count", "4"))
+    except Exception:
+        count = 4
+    count = max(1, min(10, count))
+
+    label = "Face swap" if mode == "face_swap" else "Object edit"
+
+    if not prompt:
+        return jsonify({"error": f"{label}: a prompt describing the change is required"})
+    if not base_files and not base_path:
+        return jsonify({"error": f"{label}: attach a base thumbnail first (Step 1)"})
+
+    mask_data = mask_files[0] if mask_files else None
+    ref_data = ref_files[0] if ref_files else None
+
+    if mode == "object" and not mask_data:
+        return jsonify({"error": "Object edit: paint a region on the canvas first, then Generate."})
+    if mode == "face_swap" and not mask_data and not ref_data:
+        return jsonify({"error": "Face swap: attach a new-face reference and/or paint a mask."})
+
+    # Load the base image bytes (uploaded file or a prior result as follow-up base).
+    try:
+        if base_files:
+            base_bytes = base_files[0]
+            Image.open(io.BytesIO(base_bytes)).convert("RGB")  # validate
+        else:
+            real = os.path.realpath(base_path)
+            thumbs_real = os.path.realpath(THUMBNAILS_DIR)
+            if not real.startswith(thumbs_real):
+                return jsonify({"error": f"Base path outside thumbnails dir: {base_path}"})
+            if not os.path.isfile(real):
+                return jsonify({"error": f"Base image not found on disk: {base_path}"})
+            with open(real, "rb") as f:
+                base_bytes = f.read()
+    except Exception as e:
+        return jsonify({"error": f"Could not load base image: {str(e)[:200]}"})
+
+    try:
+        thumb_bytes, mask_bytes, ref_bytes = prepare_face_change(
+            base_bytes, prompt, ref_data, mask_data=mask_data
+        )
+    except Exception as e:
+        return jsonify({"error": f"{label}: preprocessing failed — {str(e)[:200]}"})
+
+    session_id = safe_session_id(request.args.get("session_id") or "default")
+    episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}-{session_id}")
+    with _lk:
+        _st["round_num"] = _st.get("round_num", 0) + 1
+        round_num = _st["round_num"]
+        _st["ideas"] = [f"{label}: {prompt[:120]}"]
+        _st["episode_dir"] = episode_dir
+    round_dir = os.path.join(episode_dir, f"round{round_num}")
+
+    run_gpt_inpaint(
+        thumb_bytes, mask_bytes, ref_bytes, prompt, count, round_dir,
+        target_status=_st, target_lock=_lk, label=label,
+    )
+
+    return jsonify({"ok": True, "output_dir": round_dir, "count": count})
 
 
 @revision_bp.route("/revision/save_and_clear", methods=["POST"])
