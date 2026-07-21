@@ -79,6 +79,14 @@ def revise_upload():
         count = 10
     count = max(1, min(50, count))
 
+    engine = (fields.get("engine", "gemini") or "gemini").strip().lower()
+    if engine not in ("gemini", "openai"):
+        return jsonify({"error": f"Unknown engine: {engine}"})
+    if engine == "openai":
+        from config import OPENAI_API_KEY
+        if not OPENAI_API_KEY:
+            return jsonify({"error": "OPENAI_API_KEY is not set on the server — the OpenAI engine is disabled."})
+
     if not prompt:
         return jsonify({"error": "Revision prompt is required"})
     if not base_files and not base_path:
@@ -143,10 +151,6 @@ def revise_upload():
                 ok_count += 1
         _st["log"].append(f"All {ok_count}/{count} face changes done in {_fc_elapsed:.1f}s → starting Gemini immediately")
 
-    backends = get_all_backends()
-    primary = backends[0]
-    attachment_refs_by_backend = upload_files_from_bytes(files.get("revision_images", []), "revision_img")
-
     # Scope the output dir to this session so two browsers can't overwrite each other's files
     session_id = safe_session_id(request.args.get("session_id") or "default")
     episode_dir = os.path.join(THUMBNAILS_DIR, f"revision-page-{datetime.date.today().isoformat()}-{session_id}")
@@ -154,19 +158,49 @@ def revise_upload():
         _st["round_num"] = _st.get("round_num", 0) + 1
         round_num = _st["round_num"]
         revision_idea_idx = 0
-        _st["ideas"] = [f"Revision page: {prompt[:120]}"]
+        _st["ideas"] = [f"Revision page [{engine}]: {prompt[:120]}"]
         _st["episode_dir"] = episode_dir
 
     round_dir = os.path.join(episode_dir, f"round{round_num}")
     os.makedirs(round_dir, exist_ok=True)
+
+    custom_context = fields.get("revision_context_prompt", "").strip() or None
+    _st["add_border"] = fields.get("add_border") == "1"
+    _st["logo_corner"] = fields.get("logo_corner", "bottom-left").strip() or "bottom-left"
+
+    if engine == "openai":
+        from thumbnails.generator import run_openai_revision
+        bases = face_changed_bases if face_changed_bases else [base_img]
+        base_bytes_list = []
+        for im in bases:
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            base_bytes_list.append(buf.getvalue())
+        # Face-changed variants get 1 revision each, matching the Gemini count_per=1 convention
+        run_count = len(bases) if face_changed_bases else count
+        run_openai_revision(
+            base_bytes_list, prompt, run_count, round_dir,
+            attachment_bytes_list=files.get("revision_images", []),
+            context_prompt=custom_context,
+            target_status=_st, target_lock=_lk,
+        )
+        with _lk:
+            base_src = "uploaded file" if base_files else "follow-up result"
+            _st["log"].append(f"Revision base: {base_src}")
+            _st["log"].append(f"Prompt: {prompt[:180]}")
+            _st["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")
+            _st["log"].append(f"Requested attempts: {run_count}")
+        return jsonify({"ok": True, "output_dir": round_dir, "count": run_count})
+
+    backends = get_all_backends()
+    primary = backends[0]
+    attachment_refs_by_backend = upload_files_from_bytes(files.get("revision_images", []), "revision_img")
 
     stored_speakers = _st.get("speakers")
     if isinstance(stored_speakers, dict):
         speaker_refs_by_backend = stored_speakers
     else:
         speaker_refs_by_backend = {"primary": list(stored_speakers or []), "secondary": []}
-
-    custom_context = fields.get("revision_context_prompt", "").strip() or None
 
     if face_changed_bases:
         # Each face-changed variant gets 1 Gemini revision
@@ -192,9 +226,6 @@ def revise_upload():
             context_prompt=custom_context,
         )
 
-    _st["add_border"] = fields.get("add_border") == "1"
-    _st["logo_corner"] = fields.get("logo_corner", "bottom-left").strip() or "bottom-left"
-
     run_generation(
         primary, prompts, round_dir, "revision_page",
         target_status=_st, target_lock=_lk,
@@ -202,6 +233,7 @@ def revise_upload():
     )
     with _lk:
         base_src = "uploaded file" if base_files else "follow-up result"
+        _st["log"].append("Engine: Gemini")
         _st["log"].append(f"Revision base: {base_src}")
         _st["log"].append(f"Prompt: {prompt[:180]}")
         _st["log"].append(f"Extra refs attached: {len(files.get('revision_images', []))}")

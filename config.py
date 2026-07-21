@@ -65,6 +65,8 @@ FC_CORE_EXPRESSIONS = [
 # ----- Generation -----
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", 5))
 COST_PER_IMAGE = 0.045  # $0.045 per 512px image
+# gpt-image-2 high quality at 1280x720 — estimate, override via env when pricing settles
+OPENAI_COST_PER_IMAGE = float(os.environ.get("OPENAI_COST_PER_IMAGE", 0.15))
 MAX_BRAND_REFS_PER_CALL = 3
 MAX_SPEAKER_REFS_PER_CALL = 4
 MAX_LIRON_REFS_PER_CALL = 4

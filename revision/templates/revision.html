@@ -89,6 +89,11 @@
     <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
       <label for="genCount" class="hint" style="margin:0;">Count</label>
       <input id="genCount" type="number" min="1" max="50" value="10" style="width:84px; background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;">
+      <label for="engineSelect" class="hint" style="margin:0;">Engine</label>
+      <select id="engineSelect" style="background:#0d1b3e; border:1px solid #0f3460; color:#fff; border-radius:8px; padding:8px;" onchange="localStorage.setItem('revEngine', this.value)">
+        <option value="gemini" selected>Gemini (default)</option>
+        <option value="openai">OpenAI gpt-image-2</option>
+      </select>
       <button id="runBtn" class="btn" onclick="runRevision()">Generate</button>
       <button id="cancelBtn" class="btn" style="background:#ef4444;display:none;" onclick="cancelGeneration()">Cancel</button>
       <button id="saveClearBtn" class="btn" style="background:#4ade80;display:none;" onclick="saveAndClear()">💾 Save & Clear</button>
@@ -217,6 +222,13 @@
 const SESSION_ID = localStorage.getItem('revSessionId') || crypto.randomUUID();
 localStorage.setItem('revSessionId', SESSION_ID);
 console.log('[REVISION] session_id=' + SESSION_ID);
+
+// Restore last-used engine choice
+(function() {
+  const savedEngine = localStorage.getItem('revEngine');
+  const engineEl = document.getElementById('engineSelect');
+  if (savedEngine && engineEl) engineEl.value = savedEngine;
+})();
 
 let pollInterval = null;
 let seen = new Set();
@@ -930,6 +942,8 @@ async function runRevision() {
   for (const f of attachedImages) fd.append('revision_images', f, f.name || 'attached_ref.png');
   fd.append('prompt', feedback);
   fd.append('count', String(requestedCount));
+  const engine = (document.getElementById('engineSelect') || {}).value || 'gemini';
+  fd.append('engine', engine);
   const customRevisionContext = (document.getElementById('revisionContextText') || {}).value || '';
   if (customRevisionContext) fd.append('revision_context_prompt', customRevisionContext);
 
@@ -941,7 +955,7 @@ async function runRevision() {
     // Fresh result set for this batch — clear the grid + dedup set.
     document.getElementById('resultsGrid').innerHTML = '';
     seen = new Set();
-    document.getElementById('statusText').textContent = 'Running ' + requestedCount + ' parallel attempts...';
+    document.getElementById('statusText').textContent = 'Running ' + requestedCount + ' parallel attempts (' + engine + ')...';
     startPolling();
   } catch (e) {
     alert('Error: ' + e);

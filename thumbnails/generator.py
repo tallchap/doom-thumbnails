@@ -640,6 +640,234 @@ def run_gpt_inpaint(thumb_bytes, mask_bytes, ref_bytes, prompt, count, output_di
     t.start()
 
 
+# ----- OpenAI Full-Frame Revision (engine toggle on /revision) -----
+
+
+def _openai_brand_ref_bytes(max_refs=MAX_BRAND_REFS_PER_CALL):
+    """Brand example thumbnails straight from disk as (name, bytes, mime) tuples.
+    Same sorted-dir ordering as upload_brand_references, so both engines see the
+    same first refs — no Gemini File API involved."""
+    from config import EXAMPLES_DIR
+    refs = []
+    try:
+        names = sorted(os.listdir(EXAMPLES_DIR))
+    except OSError:
+        return refs
+    for name in names:
+        if len(refs) >= max_refs:
+            break
+        low = name.lower()
+        if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
+            continue
+        try:
+            with open(os.path.join(EXAMPLES_DIR, name), "rb") as f:
+                data = f.read()
+        except OSError:
+            continue
+        mime = ("image/png" if low.endswith(".png")
+                else "image/webp" if low.endswith(".webp")
+                else "image/jpeg")
+        refs.append((name, data, mime))
+    return refs
+
+
+def build_openai_revision_prompt(custom_prompt, variation_seed, variation_total,
+                                 context_prompt=None, brand_ref_count=0, attachment_count=0):
+    """Same instruction text as the Gemini path, plus an image-order legend —
+    images.edit takes one prompt string, not interleaved text/image contents."""
+    parts = [
+        REVISION_PROMPT.format(
+            custom_prompt=custom_prompt,
+            variation_seed=variation_seed,
+            variation_total=variation_total,
+        ),
+        context_prompt or REVISION_CONTEXT_PROMPT,
+    ]
+    legend = [
+        "Image 1 is the base thumbnail to revise. KEEP the people from Image 1 in the "
+        "revised thumbnail — preserve their faces, identity, likeness, expressions and "
+        "placement exactly, unless the revision instructions explicitly say to change or "
+        "remove them."
+    ]
+    pos = 2
+    if brand_ref_count:
+        end = pos + brand_ref_count - 1
+        legend.append(
+            f"Images {pos}-{end} are Doom Debates brand-style references — match their "
+            "colors, layout, typography and energy. The people-ignore rule applies ONLY "
+            "to these brand references: do not copy any person from them, but do NOT "
+            "remove the people that belong to Image 1."
+        )
+        pos = end + 1
+    if attachment_count:
+        end = pos + attachment_count - 1
+        legend.append(
+            f"Images {pos}-{end} are user-attached reference images — use them to guide the revision."
+        )
+    parts.append(" ".join(legend))
+    return "\n\n".join(parts)
+
+
+async def async_openai_revision(client, idx, image_parts, prompt):
+    """One full-frame gpt-image-2 revision call (no mask). 3 attempts with backoff
+    on transient errors; safety rejections fail immediately."""
+    import base64
+    import time as _time
+
+    last_err = None
+    for attempt in range(3):
+        # fresh BytesIO per attempt — streams are consumed by the request
+        images = [(name, io.BytesIO(data), mime) for name, data, mime in image_parts]
+        try:
+            _t0 = _time.time()
+            print(f"[OPENAI-REV] task {idx} attempt {attempt + 1} starting")
+            response = await client.images.edit(
+                model="gpt-image-2",
+                image=images,
+                prompt=prompt,
+                size="1280x720",
+                quality="high",
+            )
+            result_b64 = response.data[0].b64_json
+            if not result_b64:
+                raise RuntimeError("GPT Image API returned no image")
+            print(f"[OPENAI-REV] task {idx} finished in {_time.time() - _t0:.1f}s")
+            return idx, base64.b64decode(result_b64)
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            retryable = any(k in msg for k in (
+                "429", "rate", "500", "502", "503", "overloaded", "timeout", "connection"))
+            if not retryable or attempt == 2:
+                raise
+            await asyncio.sleep(2 ** attempt + random.random())
+    raise last_err
+
+
+async def async_openai_revisions(count, base_parts_list, brand_refs, attachment_parts, prompt_fn):
+    """Fire all revision calls concurrently. Multiple bases (face-changed variants)
+    get 1 call each; a single base gets `count` variations."""
+    import openai
+    from config import OPENAI_API_KEY
+
+    client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
+    multi = len(base_parts_list) > 1
+    tasks = []
+    for i in range(count):
+        base = base_parts_list[i] if multi else base_parts_list[0]
+        image_parts = [base] + list(brand_refs) + list(attachment_parts)
+        tasks.append(async_openai_revision(client, i, image_parts, prompt_fn(i)))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await client.close()
+    return results
+
+
+def run_openai_revision(base_bytes_list, user_prompt, count, output_dir,
+                        attachment_bytes_list=None, context_prompt=None,
+                        target_status=None, target_lock=None):
+    """Run the main revision flow through gpt-image-2 instead of Gemini.
+
+    Mirrors run_gpt_inpaint's session-state contract so the existing /status poll
+    surfaces results with no UI changes. The Gemini path is untouched.
+    """
+    from config import OPENAI_COST_PER_IMAGE
+
+    _st = target_status if target_status is not None else main_status
+    _lk = target_lock if target_lock is not None else main_status_lock
+
+    brand_refs = _openai_brand_ref_bytes()
+    attachments = [(f"user_ref_{j + 1}.png", data, "image/png")
+                   for j, data in enumerate(attachment_bytes_list or [])]
+    # images.edit caps at 16 images per call (base + brand refs + attachments)
+    max_attach = 16 - 1 - len(brand_refs)
+    dropped = max(0, len(attachments) - max_attach)
+    attachments = attachments[:max_attach]
+
+    base_parts_list = [(f"base_{i + 1}.png", b, "image/png")
+                       for i, b in enumerate(base_bytes_list)]
+    multi = len(base_parts_list) > 1
+    variation_total = 1 if multi else count
+
+    def prompt_fn(i):
+        return build_openai_revision_prompt(
+            user_prompt,
+            variation_seed=1 if multi else i + 1,
+            variation_total=variation_total,
+            context_prompt=context_prompt,
+            brand_ref_count=len(brand_refs),
+            attachment_count=len(attachments),
+        )
+
+    with _lk:
+        _st["running"] = True
+        _st["cancel_requested"] = False
+        _st["phase"] = "revision_page"
+        _st["total"] = count
+        _st["completed"] = 0
+        _st["errors"] = 0
+        _st["log"] = [f"Engine: OpenAI gpt-image-2 — firing {count} parallel call(s) via asyncio.gather..."]
+        if brand_refs:
+            _st["log"].append(f"Brand refs attached: {len(brand_refs)}")
+        if dropped:
+            _st["log"].append(f"NOTE: dropped {dropped} attachment(s) — images.edit caps at 16 images per call")
+        _st["images"] = []
+        _st["idea_groups"] = {}
+        _st["cost"] = 0.0
+        _st["done"] = False
+        _st["output_dir"] = output_dir
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    def _run():
+        try:
+            with _lk:
+                cancelled = _st.get("cancel_requested")
+            if cancelled:
+                with _lk:
+                    _st["log"].append("Cancelled before dispatch")
+                return
+            results = asyncio.run(async_openai_revisions(
+                count, base_parts_list, brand_refs, attachments, prompt_fn))
+            for r in results:
+                if isinstance(r, Exception):
+                    with _lk:
+                        _st["errors"] += 1
+                        _st["log"].append(f"OpenAI revision failed: {str(r)[:150]}")
+                    continue
+                idx, img_bytes = r
+                if _st.get("add_border"):
+                    try:
+                        img_bytes = apply_border_pillow(img_bytes, _st.get("logo_corner", "bottom-left"))
+                    except Exception as e:
+                        with _lk:
+                            _st["log"].append(f"Border composite failed on thumb {idx}: {str(e)[:120]}")
+                filename = f"thumb_{idx:03d}.png"
+                path = os.path.join(output_dir, filename)
+                with open(path, "wb") as f:
+                    f.write(img_bytes)
+                with _lk:
+                    n = len(_st["images"]) + 1
+                    _st["images"].append({"idx": n, "path": path, "filename": filename,
+                                          "status": "ok", "idea_idx": 0})
+                    _st["idea_groups"].setdefault(0, []).append({"idx": n, "path": path})
+                    _st["completed"] += 1
+                    _st["cost"] += OPENAI_COST_PER_IMAGE
+                    _st["session_cost"] = _st.get("session_cost", 0.0) + OPENAI_COST_PER_IMAGE
+                    _st["log"].append(f"[{_st['completed']}/{count}] {filename} OK")
+        except Exception as e:
+            with _lk:
+                _st["log"].append(f"FATAL ERROR: {e}")
+        finally:
+            with _lk:
+                _st["running"] = False
+                _st["done"] = True
+                if len(_st["log"]) > MAX_LOG_ENTRIES:
+                    _st["log"] = _st["log"][-MAX_LOG_ENTRIES:]
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
 # ----- Pillow Border Composite (revision mode) -----
 
 _border_frame_cache = None
