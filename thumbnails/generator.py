@@ -26,6 +26,8 @@ from thumbnails.prompts import (
     BRAND_GUIDE, IDEA_GENERATION_PROMPT, SEARCH_QUERY_PROMPT,
     IDEA_THUMBNAIL_PROMPT, REVISION_PROMPT, REVISION_CONTEXT_PROMPT,
     VARIATION_PROMPT, BORDER_PASS_PROMPT,
+    OPENAI_BRAND_STYLE_TEXT, OPENAI_REVISION_CONTEXT_PROMPT,
+    OPENAI_NO_INVENTED_CONTENT_RULE,
 )
 
 
@@ -643,45 +645,25 @@ def run_gpt_inpaint(thumb_bytes, mask_bytes, ref_bytes, prompt, count, output_di
 # ----- OpenAI Full-Frame Revision (engine toggle on /revision) -----
 
 
-def _openai_brand_ref_bytes(max_refs=MAX_BRAND_REFS_PER_CALL):
-    """Brand example thumbnails straight from disk as (name, bytes, mime) tuples.
-    Same sorted-dir ordering as upload_brand_references, so both engines see the
-    same first refs — no Gemini File API involved."""
-    from config import EXAMPLES_DIR
-    refs = []
-    try:
-        names = sorted(os.listdir(EXAMPLES_DIR))
-    except OSError:
-        return refs
-    for name in names:
-        if len(refs) >= max_refs:
-            break
-        low = name.lower()
-        if not low.endswith((".jpg", ".jpeg", ".png", ".webp")):
-            continue
-        try:
-            with open(os.path.join(EXAMPLES_DIR, name), "rb") as f:
-                data = f.read()
-        except OSError:
-            continue
-        mime = ("image/png" if low.endswith(".png")
-                else "image/webp" if low.endswith(".webp")
-                else "image/jpeg")
-        refs.append((name, data, mime))
-    return refs
-
-
 def build_openai_revision_prompt(custom_prompt, variation_seed, variation_total,
-                                 context_prompt=None, brand_ref_count=0, attachment_count=0):
+                                 context_prompt=None, attachment_count=0):
     """Same instruction text as the Gemini path, plus an image-order legend —
-    images.edit takes one prompt string, not interleaved text/image contents."""
+    images.edit takes one prompt string, not interleaved text/image contents.
+
+    NO brand reference images are attached on this path (see OPENAI_BRAND_STYLE_TEXT in
+    thumbnails/prompts.py): images.edit composites every image it is given, so published
+    episode thumbnails leaked their headlines and faces into unrelated episodes. The brand
+    look is carried as text here; only the base image and user attachments are sent.
+    """
     parts = [
         REVISION_PROMPT.format(
             custom_prompt=custom_prompt,
             variation_seed=variation_seed,
             variation_total=variation_total,
         ),
-        context_prompt or REVISION_CONTEXT_PROMPT,
+        context_prompt or OPENAI_REVISION_CONTEXT_PROMPT,
+        OPENAI_BRAND_STYLE_TEXT,
+        OPENAI_NO_INVENTED_CONTENT_RULE,
     ]
     legend = [
         "Image 1 is the base thumbnail to revise. KEEP the people from Image 1 in the "
@@ -689,20 +671,11 @@ def build_openai_revision_prompt(custom_prompt, variation_seed, variation_total,
         "placement exactly, unless the revision instructions explicitly say to change or "
         "remove them."
     ]
-    pos = 2
-    if brand_ref_count:
-        end = pos + brand_ref_count - 1
-        legend.append(
-            f"Images {pos}-{end} are Doom Debates brand-style references — match their "
-            "colors, layout, typography and energy. The people-ignore rule applies ONLY "
-            "to these brand references: do not copy any person from them, but do NOT "
-            "remove the people that belong to Image 1."
-        )
-        pos = end + 1
     if attachment_count:
-        end = pos + attachment_count - 1
+        end = 1 + attachment_count
+        span = "Image 2 is" if attachment_count == 1 else f"Images 2-{end} are"
         legend.append(
-            f"Images {pos}-{end} are user-attached reference images — use them to guide the revision."
+            f"{span} user-attached reference images — use them to guide the revision."
         )
     parts.append(" ".join(legend))
     return "\n\n".join(parts)
@@ -744,9 +717,13 @@ async def async_openai_revision(client, idx, image_parts, prompt):
     raise last_err
 
 
-async def async_openai_revisions(count, base_parts_list, brand_refs, attachment_parts, prompt_fn):
+async def async_openai_revisions(count, base_parts_list, attachment_parts, prompt_fn):
     """Fire all revision calls concurrently. Multiple bases (face-changed variants)
-    get 1 call each; a single base gets `count` variations."""
+    get 1 call each; a single base gets `count` variations.
+
+    Only the base image and the user's own attachments are sent — never a brand
+    reference thumbnail. images.edit composites everything it is handed.
+    """
     import openai
     from config import OPENAI_API_KEY
 
@@ -755,7 +732,7 @@ async def async_openai_revisions(count, base_parts_list, brand_refs, attachment_
     tasks = []
     for i in range(count):
         base = base_parts_list[i] if multi else base_parts_list[0]
-        image_parts = [base] + list(brand_refs) + list(attachment_parts)
+        image_parts = [base] + list(attachment_parts)
         tasks.append(async_openai_revision(client, i, image_parts, prompt_fn(i)))
     results = await asyncio.gather(*tasks, return_exceptions=True)
     await client.close()
@@ -775,11 +752,13 @@ def run_openai_revision(base_bytes_list, user_prompt, count, output_dir,
     _st = target_status if target_status is not None else main_status
     _lk = target_lock if target_lock is not None else main_status_lock
 
-    brand_refs = _openai_brand_ref_bytes()
+    # NO brand reference images on this path. images.edit composites every image it is
+    # handed, so attaching published episode thumbnails made gpt-image copy their headlines
+    # and faces into unrelated episodes. Brand style travels as text (OPENAI_BRAND_STYLE_TEXT).
     attachments = [(f"user_ref_{j + 1}.png", data, "image/png")
                    for j, data in enumerate(attachment_bytes_list or [])]
-    # images.edit caps at 16 images per call (base + brand refs + attachments)
-    max_attach = 16 - 1 - len(brand_refs)
+    # images.edit caps at 16 images per call (base + attachments)
+    max_attach = 16 - 1
     dropped = max(0, len(attachments) - max_attach)
     attachments = attachments[:max_attach]
 
@@ -794,9 +773,13 @@ def run_openai_revision(base_bytes_list, user_prompt, count, output_dir,
             variation_seed=1 if multi else i + 1,
             variation_total=variation_total,
             context_prompt=context_prompt,
-            brand_ref_count=len(brand_refs),
             attachment_count=len(attachments),
         )
+
+    # Exact manifest of what goes to OpenAI, for the /logs tab — one line per image, no sampling.
+    manifest = [base_parts_list[0][0]] if not multi else [b[0] for b in base_parts_list]
+    manifest += [a[0] for a in attachments]
+    sample_prompt = prompt_fn(0)
 
     with _lk:
         _st["running"] = True
@@ -806,8 +789,10 @@ def run_openai_revision(base_bytes_list, user_prompt, count, output_dir,
         _st["completed"] = 0
         _st["errors"] = 0
         _st["log"] = [f"Engine: OpenAI gpt-image-2 — firing {count} parallel call(s) via asyncio.gather..."]
-        if brand_refs:
-            _st["log"].append(f"Brand refs attached: {len(brand_refs)}")
+        _st["log"].append("Brand reference images attached: 0 (text style guide only)")
+        _st["log"].append(f"Images sent per call ({len(manifest) if not multi else 1 + len(attachments)}): "
+                          + ", ".join(manifest))
+        _st["log"].append(f"Prompt sent to OpenAI:\n{sample_prompt}")
         if dropped:
             _st["log"].append(f"NOTE: dropped {dropped} attachment(s) — images.edit caps at 16 images per call")
         _st["images"] = []
@@ -818,6 +803,17 @@ def run_openai_revision(base_bytes_list, user_prompt, count, output_dir,
 
     os.makedirs(output_dir, exist_ok=True)
 
+    _record_api_call(
+        "gpt-image-2",
+        ["IMAGES SENT (in order): " + ", ".join(manifest),
+         "BRAND REFERENCE IMAGES: none — brand style is text-only on the OpenAI path",
+         "PROMPT (variation 1 of %d):" % variation_total,
+         sample_prompt],
+        phase="revision_page/openai",
+        target_status=_st,
+        target_lock=_lk,
+    )
+
     def _run():
         try:
             with _lk:
@@ -827,7 +823,7 @@ def run_openai_revision(base_bytes_list, user_prompt, count, output_dir,
                     _st["log"].append("Cancelled before dispatch")
                 return
             results = asyncio.run(async_openai_revisions(
-                count, base_parts_list, brand_refs, attachments, prompt_fn))
+                count, base_parts_list, attachments, prompt_fn))
             for r in results:
                 if isinstance(r, Exception):
                     with _lk:

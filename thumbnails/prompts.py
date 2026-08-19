@@ -105,3 +105,47 @@ Instructions:
 - Keep ALL existing content of the thumbnail image (text, faces, visuals) completely intact — do not alter, crop, resize, or recompose it
 - No white gap or white space between the red frame and the thumbnail content
 - Output at 1280x720 resolution"""
+
+
+# ----- OpenAI gpt-image revision (engine toggle on /revision) -----
+#
+# The OpenAI path deliberately sends NO brand reference images. `images.edit` takes a flat
+# image[] array with a single prompt string — there is no per-image channel to mark an input
+# "style only", so every attached image is treated as content to composite. Attaching published
+# episode thumbnails made gpt-image transcribe their headlines and faces into unrelated episodes
+# (e.g. "GLOBAL WARMING SOLVED!" + an SO2 balloon appearing in every attempt). The brand look is
+# conveyed as TEXT below instead. See thumbnail_gen.py commit ea8c7c7 for the same fix on Gemini.
+#
+# DO NOT add real episode headlines, guest names, or episode subjects to this text — naming them
+# in prose reintroduces the exact leak this constant exists to prevent. Style attributes only.
+
+OPENAI_BRAND_STYLE_TEXT = """DOOM DEBATES BRAND STYLE (text description — no style reference images are attached; \
+the base image already carries the house look, so preserve it rather than restyling it):
+- Background: deep red, from bright crimson to dark maroon, with a fine halftone dot texture and \
+often a soft radial gradient that is lighter behind the subjects.
+- Accents: flat stylized orange-and-yellow flame shapes rising from the bottom and side edges.
+- Headline typography: very heavy condensed sans-serif, ALL CAPS, tight tracking, white with a \
+thick dark outline and drop shadow. One key word may be gold/yellow instead of white, or the \
+headline may sit on a solid black band. Short — a few words at most, one text element.
+- Subjects: photographic people cut out from their backgrounds, large in frame (roughly 40-60% of \
+the height), placed left and right, facing camera or turned toward each other, with strong \
+intense expressions. Crisp cutout edges, subtle outer glow or shadow separating them from the red.
+- Optional emphasis devices in this house style: a hand-drawn yellow curved arrow, a centered prop \
+or object inside a thin yellow rectangular frame, and a gold "VS" lockup for head-to-head framings.
+- Palette overall: deep reds, black, white, gold/yellow accents, orange flame tones.
+- Feel: high-stakes, provocative, confrontational debate energy. Photorealistic faces, sharp focus, \
+high contrast, one clear focal point, 16:9."""
+
+OPENAI_REVISION_CONTEXT_PROMPT = """When designing the thumbnail keep this in mind:
+- Keep the core composition but just apply the requested changes.
+- Maintain 16:9 aspect ratio.
+- Do NOT introduce AI chip/microchip/circuit-board iconography (including a square chip with "AI" text).
+- TEXT FIDELITY (CRITICAL): If the revision instructions include text wrapped in quotes (single or \
+double), preserve that quoted text EXACTLY as written — same words, order, punctuation, \
+apostrophes, and capitalization. Do NOT paraphrase, normalize, or substitute synonyms for quoted text."""
+
+OPENAI_NO_INVENTED_CONTENT_RULE = """NOTHING-NEW RULE (CRITICAL): Render no headline, word, number, \
+date, name, logo, badge, prop, or graphic element that is not either already visible in Image 1 or \
+explicitly requested in the revision instructions above. Do not invent additional text. Do not add \
+people who are not in Image 1 or in a user-attached reference image. If the revision instructions \
+do not ask for a headline change, reproduce the existing headline from Image 1 verbatim."""
