@@ -38,6 +38,10 @@ __pycache__/
 !assets/
 !assets/**
 
+# Tests (source only — the fixture PNGs/HTML in tests/ stay untracked)
+!tests/
+!tests/*.py
+
 # Docs
 !FACE_CAPTURE_CONTEXT.md
 
