@@ -50,3 +50,7 @@ __pycache__/
 !format-app/**
 .gstack/
 format-app/
+
+# In-place Google Doc editor tool
+!gdoc-update/
+!gdoc-update/**
